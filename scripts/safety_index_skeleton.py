@@ -1,35 +1,73 @@
 """
-안전지수 산출 골격 코드 (safety_index_skeleton.py)
+안전지수 산출 스켈레톤 코드
 
-[이 코드가 하는 일]
-1. 데이터 파트가 만들어줄 통합 시설 CSV(facilities_clean.csv)를 입력으로 받는다.
-2. 광진구 지역을 격자(grid)로 잘게 쪼갠다.
-3. 각 격자점마다 "반경 1km 안에 CCTV/가로등/비상벨/경찰시설이 몇 개 있는지" 센다.
-4. 센 개수를 0~1 점수로 정규화한다 (CCTV는 30대 넘게 나올 수 있고 경찰서는 1개만 있어도 의미가 크기 때문).
-5. 정규화한 값에 가중치를 곱해서 더한 뒤 0~100점 안전점수(safety_score)를 만든다.
-6. 점수를 A~E 등급으로 바꾼다.
-7. 최종 결과를 safety_grid.csv로 저장한다. -> 이 파일을 UI 담당(지도/히트맵)과 경로 담당이 가져다 씀.
+이 파일의 목적:
+- 데이터 파트가 아직 최종 데이터를 완성하지 않았어도
+  안전지수 계산 흐름을 미리 만들어두기 위한 코드입니다.
 
-[UI 담당 코드와 맞춘 부분]
-UI 친구가 쓰는 표준 컬럼명: "위도", "경도", "시설유형", "주소"
-여기에 안전지수 계산을 위해 "count" 컬럼 하나만 추가로 요구함.
-  - CCTV: count = 카메라대수
-  - 가로등/비상벨/파출소/지구대/경찰서: count = 1 (한 행 = 시설 1개)
+전체 흐름:
+1. 시설 데이터 불러오기
+2. 위도/경도/시설유형/count 컬럼 정리
+3. 광진구 범위에 격자점 생성
+4. 각 격자점 기준 반경 1km 안 시설 개수 계산
+5. 시설 개수를 0~1 사이 값으로 정규화
+6. 가중치를 적용해 safety_score 계산
+7. safety_score를 A~E 등급으로 변환
+8. data/processed/safety_grid.csv 저장
 
-데이터 파트가 통합 CSV를 줄 때 컬럼명이 이 5개(위도, 경도, 시설유형, 주소, count)로
-맞춰져 있으면, 아래 INPUT_PATH 한 줄만 바꿔서 바로 실행하면 됨.
+나중에 데이터 파트가 facilities_clean.csv를 주면
+그 파일만 data/processed 폴더에 넣고 실행하면 됩니다.
 """
 
+from pathlib import Path
 import math
 import numpy as np
 import pandas as pd
 
 
 # ============================================================
-# 0. 컬럼명 설정 (UI 담당 코드의 STANDARD_COLUMNS와 동일하게 맞춤)
+# 0. 경로 설정
 # ============================================================
-# UI 코드의 STANDARD_COLUMNS = {"lat": "위도", "lng": "경도", "type": "시설유형", "address": "주소"}
-# 여기에 count만 추가로 사용함
+
+# 현재 파일 위치: scripts/safety_index_skeleton.py
+# 프로젝트 루트: SAFETY-WALK-MAP
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+
+RAW_DIR = PROJECT_ROOT / "data" / "raw"
+PROCESSED_DIR = PROJECT_ROOT / "data" / "processed"
+
+# 데이터 파트가 나중에 만들어줄 최종 통합 시설 데이터
+FACILITIES_CLEAN_PATH = PROCESSED_DIR / "facilities_clean.csv"
+
+# 안전지수 파트가 최종적으로 만들어낼 결과 파일
+OUTPUT_PATH = PROCESSED_DIR / "safety_grid.csv"
+
+
+# ============================================================
+# 1. 표준 컬럼명 설정
+# ============================================================
+
+"""
+UI 담당 코드에서 쓰는 컬럼명과 맞추기 위해
+한글 컬럼명을 기준으로 사용합니다.
+
+필수 컬럼:
+- 위도
+- 경도
+- 시설유형
+
+추가 컬럼:
+- 주소
+- count
+
+count는 개수 또는 영향량입니다.
+예:
+- CCTV: 카메라대수
+- 가로등: 1
+- 비상벨: 1
+- 경찰서/파출소/지구대: 1
+"""
+
 LAT_COL = "위도"
 LNG_COL = "경도"
 TYPE_COL = "시설유형"
@@ -38,28 +76,59 @@ COUNT_COL = "count"
 
 
 # ============================================================
-# 1. 시설유형 이름 통일 매핑
+# 2. 시설유형 이름 통일
 # ============================================================
-# 데이터 파트/UI 파트가 주는 시설유형 한글 표기를
-# 우리 계산 코드에서 쓸 영어 키워드로 바꿔주는 사전.
-# (UI 코드의 FIXED_FACILITY_TYPE에서 쓰는 이름과 동일하게 맞춤: "CCTV", "가로등", "비상벨", "파출소", "지구대", "경찰서")
+
+"""
+데이터마다 시설 이름이 다르게 들어올 수 있습니다.
+
+예:
+- CCTV, cctv, 씨씨티비
+- 파출소, 지구대, 경찰서
+
+계산할 때는 이름이 통일되어 있어야 하므로
+아래 딕셔너리를 이용해서 내부 계산용 이름으로 바꿉니다.
+"""
+
 TYPE_NORMALIZE_MAP = {
     "CCTV": "cctv",
+    "cctv": "cctv",
+    "씨씨티비": "cctv",
+
     "가로등": "streetlight",
+    "streetlight": "streetlight",
+
     "비상벨": "bell",
+    "안전비상벨": "bell",
+    "bell": "bell",
+
     "파출소": "police",
-    "지구대": "police",   # 파출소/지구대는 성격이 비슷해서 같은 그룹(police)으로 묶음
+    "지구대": "police",
     "경찰서": "police",
+    "police": "police",
 }
 
 
 # ============================================================
-# 2. 정규화 기준값 (CAP)
+# 3. 안전지수 계산 기준값과 가중치
 # ============================================================
-# 의미: "이 숫자 이상이면 만점(1.0)으로 본다"는 기준선.
-# 예) cctv 기준값이 30이면, 반경 1km 안에 카메라 30대 이상이면 cctv_norm = 1.0
-#     15대면 15/30 = 0.5
-# 이 숫자는 확정값이 아니라 프로토타입용 임시 기준이고, 실제 데이터 분포를 보고 나중에 조정하면 됨.
+
+"""
+CAPS:
+- 시설 개수를 0~1 사이로 바꾸기 위한 기준값입니다.
+
+예:
+CCTV 기준값이 30이면,
+반경 1km 안 CCTV가 15대일 때 15 / 30 = 0.5
+반경 1km 안 CCTV가 30대 이상이면 1.0으로 처리합니다.
+
+WEIGHTS:
+- 안전점수에 얼마나 반영할지 정하는 값입니다.
+
+현재는 프로토타입 기준입니다.
+나중에 데이터 분포나 교수님 피드백에 따라 조정하면 됩니다.
+"""
+
 CAPS = {
     "cctv": 30,
     "streetlight": 60,
@@ -67,13 +136,6 @@ CAPS = {
     "police": 2,
 }
 
-
-# ============================================================
-# 3. 가중치 (WEIGHTS)
-# ============================================================
-# 안전점수 공식에서 각 시설이 점수에 얼마나 영향을 주는지 정하는 값.
-# 모두 양수인 이유: 지금은 "있으면 좋은" 시설들만 다루고 있어서 (CCTV, 가로등, 비상벨, 경찰시설)
-# 나중에 범죄/사고 데이터가 들어오면 음수 가중치(감점)로 따로 추가하면 됨.
 WEIGHTS = {
     "cctv": 20,
     "streetlight": 15,
@@ -83,135 +145,198 @@ WEIGHTS = {
 
 
 # ============================================================
-# 4. 입력 데이터 검증 및 정리
+# 4. 데이터 불러오기
 # ============================================================
+
+def load_facilities() -> pd.DataFrame:
+    """
+    시설 데이터를 불러오는 함수입니다.
+
+    1순위:
+    - data/processed/facilities_clean.csv
+    - 데이터 파트가 최종적으로 만들어줄 통합 CSV입니다.
+
+    2순위:
+    - 아직 최종 데이터가 없으면 에러를 내지 않고
+      테스트용 더미 데이터를 만들어서 코드 흐름만 확인합니다.
+    """
+
+    if FACILITIES_CLEAN_PATH.exists():
+        print(f"[INFO] 최종 통합 시설 데이터 사용: {FACILITIES_CLEAN_PATH}")
+        return pd.read_csv(FACILITIES_CLEAN_PATH, encoding="utf-8-sig")
+
+    print("[WARNING] facilities_clean.csv가 아직 없습니다.")
+    print("[WARNING] 테스트용 더미 데이터로 안전지수 계산 흐름만 확인합니다.")
+
+    dummy_data = [
+        {
+            "위도": 37.5400,
+            "경도": 127.0830,
+            "시설유형": "CCTV",
+            "주소": "테스트 주소 1",
+            "count": 3,
+        },
+        {
+            "위도": 37.5420,
+            "경도": 127.0810,
+            "시설유형": "가로등",
+            "주소": "테스트 주소 2",
+            "count": 1,
+        },
+        {
+            "위도": 37.5370,
+            "경도": 127.0850,
+            "시설유형": "비상벨",
+            "주소": "테스트 주소 3",
+            "count": 1,
+        },
+        {
+            "위도": 37.5390,
+            "경도": 127.0795,
+            "시설유형": "파출소",
+            "주소": "테스트 주소 4",
+            "count": 1,
+        },
+    ]
+
+    return pd.DataFrame(dummy_data)
+
+
+# ============================================================
+# 5. 데이터 검증 및 정리
+# ============================================================
+
 def validate_facilities(df: pd.DataFrame) -> pd.DataFrame:
     """
-    [목적]
-    데이터 파트가 준 시설 CSV를 안전지수 계산이 가능한 깨끗한 상태로 만든다.
+    시설 데이터를 안전지수 계산에 사용할 수 있는 상태로 정리합니다.
 
-    [입력]
-    df: "위도", "경도", "시설유형" 컬럼이 들어있는 원본 DataFrame
-        ("주소", "count"는 있으면 쓰고 없으면 자동으로 채움)
-
-    [하는 일]
-    1) 필수 컬럼(위도, 경도, 시설유형)이 있는지 확인 -> 없으면 에러를 띄워서 바로 알아챌 수 있게 함
-    2) 위도/경도를 숫자로 변환 (혹시 문자로 들어왔을 경우 대비)
-    3) count 컬럼이 없으면 전부 1로 채움 (가로등/비상벨/경찰서처럼 "한 행 = 시설 1개"인 경우)
-    4) 위도/경도가 비어있는 행은 제거 (좌표 없으면 거리 계산 자체가 불가능하기 때문)
-    5) 시설유형 이름을 cctv / streetlight / bell / police 로 통일
-
-    [출력]
-    계산 가능한 상태로 정리된 DataFrame
+    하는 일:
+    1. 필수 컬럼 존재 여부 확인
+    2. 위도/경도를 숫자형으로 변환
+    3. count 컬럼이 없으면 기본값 1 생성
+    4. 위도/경도가 없는 행 제거
+    5. 시설유형 이름 통일
     """
 
-    # 필수 컬럼 체크: 이게 없으면 애초에 계산을 시작할 수 없으므로 바로 에러로 알려줌
     required_cols = [LAT_COL, LNG_COL, TYPE_COL]
+
     for col in required_cols:
         if col not in df.columns:
-            raise ValueError(f"필수 컬럼이 없습니다: {col} (데이터 파트에 컬럼명 확인 요청 필요)")
+            raise ValueError(f"필수 컬럼이 없습니다: {col}")
 
-    df = df.copy()  # 원본 보호용 복사본
+    df = df.copy()
 
-    # 위도/경도를 숫자형으로 변환. 변환 안 되는 값(문자 등)은 NaN으로 바뀜 (errors="coerce")
+    # 위도/경도는 거리 계산에 쓰이므로 반드시 숫자여야 합니다.
     df[LAT_COL] = pd.to_numeric(df[LAT_COL], errors="coerce")
     df[LNG_COL] = pd.to_numeric(df[LNG_COL], errors="coerce")
 
-    # count 컬럼이 아예 없는 CSV라면(예: 가로등 원본) 기본값 1을 채움
+    # count가 없으면 한 행을 시설 1개로 봅니다.
     if COUNT_COL not in df.columns:
         df[COUNT_COL] = 1
 
-    # count도 숫자로 변환하고, 빈 값이면 1로 채움 (시설 1개로 취급)
     df[COUNT_COL] = pd.to_numeric(df[COUNT_COL], errors="coerce")
     df[COUNT_COL] = df[COUNT_COL].fillna(1)
 
-    # 위도/경도가 없는 행은 지도에 찍을 수도, 거리 계산도 할 수 없으므로 제거
+    # 위도/경도가 없으면 반경 계산이 불가능하므로 제거합니다.
+    before_count = len(df)
     df = df.dropna(subset=[LAT_COL, LNG_COL])
+    after_count = len(df)
 
-    # "CCTV", "가로등" 같은 한글 표기를 "cctv", "streetlight" 같은 내부 키워드로 통일
-    # 매핑에 없는 값은 원래 값 그대로 둠 (나중에 새로운 시설유형이 추가돼도 에러 안 나게)
+    print(f"[INFO] 위도/경도 결측 제거: {before_count}행 -> {after_count}행")
+
+    # 시설유형 이름 통일
     df[TYPE_COL] = df[TYPE_COL].map(TYPE_NORMALIZE_MAP).fillna(df[TYPE_COL])
+
+    print("[INFO] 시설유형별 데이터 개수")
+    print(df[TYPE_COL].value_counts())
 
     return df
 
 
 # ============================================================
-# 5. 평가 지점(격자) 생성
+# 6. 격자점 생성
 # ============================================================
+
 def create_grid_from_facilities(df: pd.DataFrame, grid_step: float = 0.003) -> pd.DataFrame:
     """
-    [목적]
-    안전점수를 계산할 기준 위치(격자점)들을 만든다.
-    안전지수는 시설 하나하나에 매기는 게 아니라 "지역의 각 위치"에 매기는 것이기 때문에
-    먼저 점수를 매길 좌표 목록이 필요함.
+    시설 데이터의 위도/경도 범위를 기준으로 격자점을 생성합니다.
 
-    [입력]
-    df: 위도/경도가 정리된 시설 DataFrame (이 데이터의 좌표 범위를 기준으로 격자를 만듦)
-    grid_step: 격자 간격 (위도/경도 단위). 0.003 정도가 대략 300m 안팎 간격이라 테스트용으로 적당함.
-               숫자가 작을수록 촘촘해지지만 계산 시간이 늘어남.
+    격자점이란?
+    - 안전점수를 계산할 기준 위치입니다.
+    - 지도 전체를 일정 간격의 점들로 나눈다고 생각하면 됩니다.
 
-    [출력]
-    grid_id, 위도, 경도 컬럼을 가진 DataFrame (각 행 = 평가할 위치 하나)
+    grid_step:
+    - 위도/경도 간격입니다.
+    - 0.003은 테스트용입니다.
+    - 값이 작을수록 더 촘촘한 지도가 되지만 계산 시간이 늘어납니다.
     """
 
-    # 시설들이 분포한 좌표 범위(최소/최대)를 구해서 그 범위 안에서만 격자를 만듦
-    lat_min, lat_max = df[LAT_COL].min(), df[LAT_COL].max()
-    lng_min, lng_max = df[LNG_COL].min(), df[LNG_COL].max()
+    lat_min = df[LAT_COL].min()
+    lat_max = df[LAT_COL].max()
+    lng_min = df[LNG_COL].min()
+    lng_max = df[LNG_COL].max()
 
     grid_points = []
     grid_id = 0
 
-    # np.arange로 grid_step 간격의 위도/경도 후보값 목록을 만듦
     lat_values = np.arange(lat_min, lat_max, grid_step)
     lng_values = np.arange(lng_min, lng_max, grid_step)
 
-    # 위도 x 경도 모든 조합 = 격자점 하나하나
     for lat in lat_values:
         for lng in lng_values:
-            grid_points.append({
-                "grid_id": f"grid_{grid_id}",
-                LAT_COL: lat,
-                LNG_COL: lng,
-            })
+            grid_points.append(
+                {
+                    "grid_id": f"grid_{grid_id}",
+                    LAT_COL: lat,
+                    LNG_COL: lng,
+                }
+            )
             grid_id += 1
 
-    return pd.DataFrame(grid_points)
+    grid = pd.DataFrame(grid_points)
+
+    print(f"[INFO] 생성된 격자점 수: {len(grid)}개")
+
+    return grid
 
 
 # ============================================================
-# 6. 두 좌표 사이 거리 계산 (Haversine 공식)
+# 7. 거리 계산 함수
 # ============================================================
-def haversine(lat1, lng1, lat2, lng2):
+
+def haversine(lat1: float, lng1: float, lat2: float, lng2: float) -> float:
     """
-    [목적]
-    위도/경도로 표현된 두 지점 사이의 실제 거리를 km 단위로 계산한다.
-    지구는 평면이 아니라 둥글기 때문에 단순 좌표 차이로는 거리를 정확히 잴 수 없어서
-    Haversine이라는 공식을 사용함 (지리 데이터에서 거리 계산할 때 표준적으로 쓰는 방식).
+    두 좌표 사이 거리를 km 단위로 계산합니다.
 
-    [입력]
-    lat1, lng1: 기준점 위도/경도
-    lat2, lng2: 비교할 지점 위도/경도
-
-    [출력]
-    두 지점 사이 거리 (km)
+    왜 필요한가?
+    - '반경 1km 안에 시설이 있는지' 판단하려면
+      기준점과 시설점 사이의 거리를 알아야 하기 때문입니다.
     """
-    R = 6371  # 지구 반지름 (km), 고정값
 
-    # 도(degree) 단위를 라디안(radian) 단위로 변환 (삼각함수 계산을 위해 필요)
-    lat1, lng1, lat2, lng2 = map(math.radians, [lat1, lng1, lat2, lng2])
+    R = 6371  # 지구 반지름, 단위 km
+
+    lat1 = math.radians(lat1)
+    lng1 = math.radians(lng1)
+    lat2 = math.radians(lat2)
+    lng2 = math.radians(lng2)
 
     dlat = lat2 - lat1
     dlng = lng2 - lng1
 
-    a = math.sin(dlat / 2) ** 2 + math.cos(lat1) * math.cos(lat2) * math.sin(dlng / 2) ** 2
+    a = (
+        math.sin(dlat / 2) ** 2
+        + math.cos(lat1) * math.cos(lat2) * math.sin(dlng / 2) ** 2
+    )
+
     c = 2 * math.asin(math.sqrt(a))
 
     return R * c
 
 
 # ============================================================
-# 7. 특정 지점 기준, 특정 시설유형의 반경 내 개수(count 합) 계산
+# 8. 반경 안 시설 개수 계산
 # ============================================================
+
 def count_one_type_nearby(
     target_lat: float,
     target_lng: float,
@@ -220,68 +345,67 @@ def count_one_type_nearby(
     radius_km: float = 1.0,
 ) -> float:
     """
-    [목적]
-    기준 위치(target_lat, target_lng) 하나를 받아서,
-    그 위치 주변 radius_km(기본 1km) 안에 있는 특정 시설유형(facility_type)의
-    count 합계를 구한다.
+    특정 지점 주변 radius_km 안에 있는 특정 시설유형의 count 합계를 계산합니다.
 
-    예) count_one_type_nearby(37.5485, 127.1030, facilities, "cctv", 1.0)
-        -> 이 위치 1km 안에 있는 CCTV 카메라 총 대수
+    예:
+    target_lat, target_lng = 어떤 격자점 위치
+    facility_type = "cctv"
+    radius_km = 1.0
 
-    [입력]
-    target_lat, target_lng: 기준 위치 좌표
-    facilities: 검증 완료된 시설 DataFrame
-    facility_type: "cctv" / "streetlight" / "bell" / "police" 중 하나
-    radius_km: 반경 (기본 1km)
-
-    [출력]
-    해당 시설유형의 반경 내 count 합계 (숫자)
+    의미:
+    - 이 격자점 주변 1km 안에 CCTV가 총 몇 대 있는지 계산합니다.
     """
 
-    # 전체 시설 중에서 해당 시설유형만 필터링
     target_df = facilities[facilities[TYPE_COL] == facility_type]
 
-    # 해당 시설유형 데이터가 아예 없으면(아직 데이터 파트가 안 줬으면) 0으로 처리
     if target_df.empty:
         return 0
 
     total = 0
-    # 필터링된 시설들을 하나씩 돌면서 기준점과의 거리를 재고, 반경 안에 있으면 count를 더함
+
     for _, row in target_df.iterrows():
-        distance = haversine(target_lat, target_lng, row[LAT_COL], row[LNG_COL])
+        distance = haversine(
+            target_lat,
+            target_lng,
+            row[LAT_COL],
+            row[LNG_COL],
+        )
+
         if distance <= radius_km:
             total += row[COUNT_COL]
 
     return total
 
 
-# ============================================================
-# 8. 모든 격자점에 반경 집계 적용
-# ============================================================
-def add_nearby_counts(grid: pd.DataFrame, facilities: pd.DataFrame, radius_km: float = 1.0) -> pd.DataFrame:
+def add_nearby_counts(
+    grid: pd.DataFrame,
+    facilities: pd.DataFrame,
+    radius_km: float = 1.0,
+) -> pd.DataFrame:
     """
-    [목적]
-    격자점 전체에 대해 시설유형별로 "반경 1km 안 개수" 컬럼을 만든다.
-    (예: cctv_count_1km, streetlight_count_1km, bell_count_1km, police_count_1km)
+    모든 격자점에 대해 시설유형별 반경 내 개수를 계산합니다.
 
-    [입력]
-    grid: create_grid_from_facilities()로 만든 격자점 DataFrame
-    facilities: 검증 완료된 시설 DataFrame
-    radius_km: 반경 (기본 1km)
-
-    [출력]
-    시설유형별 반경 내 개수 컬럼이 추가된 grid DataFrame
+    결과 예:
+    - cctv_count_1km
+    - streetlight_count_1km
+    - bell_count_1km
+    - police_count_1km
     """
+
     grid = grid.copy()
 
-    # WEIGHTS에 정의된 시설유형들(cctv, streetlight, bell, police)에 대해 각각 계산
     for facility_type in WEIGHTS.keys():
         col_name = f"{facility_type}_count_1km"
 
-        # grid의 각 행(=각 격자점)마다 count_one_type_nearby를 호출해서 값을 채움
+        print(f"[INFO] {col_name} 계산 중...")
+
         grid[col_name] = grid.apply(
             lambda row: count_one_type_nearby(
-                row[LAT_COL], row[LNG_COL], facilities, facility_type, radius_km=radius_km
+                row[LAT_COL],
+                row[LNG_COL],
+                facilities,
+                facility_type,
+                radius_km=radius_km,
             ),
             axis=1,
         )
@@ -290,32 +414,29 @@ def add_nearby_counts(grid: pd.DataFrame, facilities: pd.DataFrame, radius_km: f
 
 
 # ============================================================
-# 9. 정규화 (0~1로 변환)
+# 9. 정규화
 # ============================================================
+
 def add_normalized_scores(grid: pd.DataFrame) -> pd.DataFrame:
     """
-    [목적]
-    시설 개수는 단위가 제각각이라 (CCTV는 수십 대, 경찰서는 1~2개) 그대로 더하면
-    숫자가 큰 시설(CCTV)이 점수를 거의 독점해버림.
-    그래서 CAPS 기준값으로 나눠서 모든 시설을 0~1 사이 값으로 맞춘다.
+    시설 개수를 0~1 사이 값으로 바꿉니다.
 
-    [입력]
-    grid: add_nearby_counts()를 거친 DataFrame (예: cctv_count_1km 등이 있는 상태)
-
-    [출력]
-    각 시설유형별 정규화 컬럼(예: cctv_norm)이 추가된 DataFrame
+    이유:
+    - CCTV는 30대까지 나올 수 있고,
+      경찰서는 1개만 있어도 의미가 큽니다.
+    - 단위가 다른 값을 그대로 더하면 CCTV 숫자가 너무 크게 작용합니다.
+    - 그래서 각 시설별 기준값을 두고 0~1 사이로 변환합니다.
     """
+
     grid = grid.copy()
 
     for facility_type, cap in CAPS.items():
         count_col = f"{facility_type}_count_1km"
         norm_col = f"{facility_type}_norm"
 
-        # 혹시 해당 시설 데이터가 아직 없어서 컬럼 자체가 없으면 0으로 만들어둠 (에러 방지)
         if count_col not in grid.columns:
             grid[count_col] = 0
 
-        # count를 cap으로 나누고, 1을 넘지 않도록 clip(최댓값 제한)
         grid[norm_col] = (grid[count_col] / cap).clip(0, 1)
 
     return grid
@@ -324,37 +445,38 @@ def add_normalized_scores(grid: pd.DataFrame) -> pd.DataFrame:
 # ============================================================
 # 10. 안전점수 계산
 # ============================================================
+
 def add_safety_score(grid: pd.DataFrame) -> pd.DataFrame:
     """
-    [목적]
-    정규화된 시설 점수에 가중치를 곱해서 최종 안전점수(0~100)를 만든다.
+    정규화된 시설 점수에 가중치를 적용해서 안전점수를 계산합니다.
 
-    [공식]
-    안전점수 = 50 (기본 점수)
-             + cctv_norm * cctv 가중치
-             + streetlight_norm * 가로등 가중치
-             + bell_norm * 비상벨 가중치
-             + police_norm * 경찰시설 가중치
+    현재 공식:
+    safety_score =
+        50
+        + cctv_norm * 20
+        + streetlight_norm * 15
+        + bell_norm * 10
+        + police_norm * 15
 
-    50점에서 시작하는 이유: 아무 시설 정보가 없을 때 점수가 무조건 0이 되면
-    "위험하다"는 잘못된 인상을 주기 때문에, 중립값(보통)으로 시작함.
-
-    [입력]
-    grid: add_normalized_scores()를 거친 DataFrame
-
-    [출력]
-    safety_score 컬럼(0~100)이 추가된 DataFrame
+    50점에서 시작하는 이유:
+    - 아무 시설이 없다고 바로 0점으로 두면 너무 극단적입니다.
+    - 기본값을 보통 수준인 50점으로 두고,
+      안전시설이 많을수록 점수가 올라가게 합니다.
     """
+
     grid = grid.copy()
-    grid["safety_score"] = 50  # 기본 점수(중립)에서 시작
+
+    grid["safety_score"] = 50
 
     for facility_type, weight in WEIGHTS.items():
         norm_col = f"{facility_type}_norm"
+
         if norm_col not in grid.columns:
             grid[norm_col] = 0
+
         grid["safety_score"] += grid[norm_col] * weight
 
-    # 혹시 계산상 100 넘거나 0 밑으로 내려가는 걸 방지 (clip으로 범위 고정)
+    # 점수는 0~100 사이로 제한합니다.
     grid["safety_score"] = grid["safety_score"].clip(0, 100)
 
     return grid
@@ -363,18 +485,18 @@ def add_safety_score(grid: pd.DataFrame) -> pd.DataFrame:
 # ============================================================
 # 11. A~E 등급 변환
 # ============================================================
+
 def score_to_grade(score: float) -> str:
     """
-    [목적]
-    숫자 점수만으로는 직관적으로 와닿지 않으므로, 등급(A~E)으로 바꿔서
-    지도에서 색깔로 바로 표현할 수 있게 한다.
+    안전점수를 A~E 등급으로 변환합니다.
 
-    점수 80 이상 -> A (매우 안전)
-    점수 65 이상 -> B (안전)
-    점수 50 이상 -> C (보통)
-    점수 35 이상 -> D (주의)
-    그 미만      -> E (위험)
+    A: 매우 안전
+    B: 안전
+    C: 보통
+    D: 주의
+    E: 위험
     """
+
     if score >= 80:
         return "A"
     elif score >= 65:
@@ -388,51 +510,74 @@ def score_to_grade(score: float) -> str:
 
 
 def add_grade(grid: pd.DataFrame) -> pd.DataFrame:
-    """safety_score 컬럼을 기준으로 grade 컬럼을 추가하는 함수"""
+    """
+    safety_score 컬럼을 기준으로 grade 컬럼을 추가합니다.
+    """
+
     grid = grid.copy()
     grid["grade"] = grid["safety_score"].apply(score_to_grade)
     return grid
 
 
 # ============================================================
-# 12. 전체 파이프라인을 한 번에 실행하는 함수
+# 12. 전체 파이프라인 함수
 # ============================================================
+
 def build_safety_grid(
     facilities: pd.DataFrame,
     grid_step: float = 0.003,
     radius_km: float = 1.0,
 ) -> pd.DataFrame:
     """
-    [목적]
-    위에서 만든 모든 단계(검증 -> 격자생성 -> 반경집계 -> 정규화 -> 점수화 -> 등급화)를
-    순서대로 한 번에 실행해주는 함수. 실제로 사용할 때는 이 함수 하나만 호출하면 됨.
+    안전지수 산출 전체 과정을 한 번에 실행하는 함수입니다.
 
-    [입력]
-    facilities: 데이터 파트가 준 원본 시설 DataFrame (위도, 경도, 시설유형, [주소], [count])
-    grid_step: 격자 간격
-    radius_km: 집계 반경
+    입력:
+    - facilities: 시설 데이터
+    - grid_step: 격자 간격
+    - radius_km: 주변 시설을 탐색할 반경
 
-    [출력]
-    grid_id, 위도, 경도, 시설별 개수/정규화값, safety_score, grade가 모두 담긴 최종 DataFrame
+    출력:
+    - 각 격자점별 안전점수와 등급이 포함된 DataFrame
     """
+
     facilities = validate_facilities(facilities)
-    grid = create_grid_from_facilities(facilities, grid_step=grid_step)
-    grid = add_nearby_counts(grid, facilities, radius_km=radius_km)
+
+    grid = create_grid_from_facilities(
+        facilities,
+        grid_step=grid_step,
+    )
+
+    grid = add_nearby_counts(
+        grid,
+        facilities,
+        radius_km=radius_km,
+    )
+
     grid = add_normalized_scores(grid)
     grid = add_safety_score(grid)
     grid = add_grade(grid)
+
     return grid
 
 
 # ============================================================
-# 13. 실행부 (이 파일을 직접 실행했을 때 동작하는 부분)
+# 13. 실행 부분
 # ============================================================
-if __name__ == "__main__":
-    # ---- 데이터 파트가 통합 CSV를 준 "이후"에는 이 경로만 바꿔서 그대로 실행하면 됨 ----
-    INPUT_PATH = "facilities_clean.csv"   # 위도, 경도, 시설유형, [주소], [count] 컬럼이 있어야 함
-    OUTPUT_PATH = "safety_grid.csv"       # UI/경로 담당에게 넘길 최종 산출물
 
-    facilities = pd.read_csv(INPUT_PATH, encoding="utf-8-sig")
+def main():
+    """
+    이 파일을 직접 실행했을 때 작동하는 부분입니다.
+
+    실행 방법:
+    터미널에서 아래 명령어 입력
+
+    python scripts/safety_index_skeleton.py
+    """
+
+    # processed 폴더가 없으면 자동으로 생성합니다.
+    PROCESSED_DIR.mkdir(parents=True, exist_ok=True)
+
+    facilities = load_facilities()
 
     safety_grid = build_safety_grid(
         facilities,
@@ -440,32 +585,17 @@ if __name__ == "__main__":
         radius_km=1.0,
     )
 
-    safety_grid.to_csv(OUTPUT_PATH, index=False, encoding="utf-8-sig")
+    safety_grid.to_csv(
+        OUTPUT_PATH,
+        index=False,
+        encoding="utf-8-sig",
+    )
 
-    print("안전지수 산출 완료:", OUTPUT_PATH)
+    print("[DONE] 안전지수 산출 완료")
+    print(f"[DONE] 저장 위치: {OUTPUT_PATH}")
+    print()
     print(safety_grid.head())
 
 
-# ============================================================
-# [참고] 지금 당장 CCTV 데이터만으로 테스트하고 싶다면 (데이터 파트 결과물 오기 전)
-# ============================================================
-# 아래처럼 CCTV 원본을 임시로 표준 형식(위도/경도/시설유형/주소/count)으로 바꿔서
-# build_safety_grid()에 그대로 넣어보면 코드가 정상 작동하는지 미리 확인할 수 있음.
-#
-# import pandas as pd
-#
-# cctv_raw = pd.read_csv(
-#     "/kaggle/input/datasets/shinyoug/map-info/CCTV_.csv",
-#     encoding="cp949"
-# )
-#
-# facilities_test = pd.DataFrame({
-#     "위도": cctv_raw["WGS84위도"],
-#     "경도": cctv_raw["WGS84경도"],
-#     "시설유형": "CCTV",
-#     "주소": cctv_raw["소재지도로명주소"],
-#     "count": cctv_raw["카메라대수"],   # CCTV는 카메라대수를 count로 사용
-# })
-#
-# safety_grid_test = build_safety_grid(facilities_test, grid_step=0.003, radius_km=1.0)
-# display(safety_grid_test.head())
+if __name__ == "__main__":
+    main()
