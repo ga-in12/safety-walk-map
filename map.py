@@ -224,9 +224,4 @@ def run_streamlit_app():
 
 
 if __name__ == "__main__":
-    # 단독 실행 테스트 (streamlit 없이 folium 지도만 html로 확인)
-    df = build_dummy_data()
-    base_map = create_base_map()
-    base_map = add_facility_layers(base_map, df)
-    base_map.save("test_map.html")
-    print("test_map.html 생성 완료 - 브라우저로 열어서 마커/레이어 토글 확인 가능")
+    run_streamlit_app()
