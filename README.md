@@ -22,4 +22,26 @@ CCTV, 가로등, 경찰시설은 점수를 높이는 요소로 반영한다.
 사고, 위험 관련 데이터는 점수를 낮추는 요소로 반영한다.
 
 
+## 안전지수 파트 작업 계획
+
+입력:
+- 데이터 파트에서 정리한 facilities_clean.csv
+- 필수 컬럼: 위도, 경도, 시설유형, 주소, count
+
+처리 과정:
+1. 위도/경도 결측치 제거 및 숫자형 변환
+2. 시설유형 이름 통일
+3. 광진구 영역 내 격자점 생성
+4. 각 격자점 기준 반경 1km 내 시설 개수 집계
+5. 시설별 기준값을 이용해 0~1 정규화
+6. 안전시설은 가산점으로 반영하여 safety_score 계산
+7. safety_score를 A~E 등급으로 변환
+
+출력:
+- safety_grid.csv
+- 컬럼: grid_id, 위도, 경도, cctv_count_1km, streetlight_count_1km, bell_count_1km, police_count_1km, safety_score, grade
+
+활용:
+- UI 파트: 안전지수 히트맵 및 등급 색상 지도 표시
+- 경로 파트: 안전점수가 높은 도로를 우선하는 경로 추천에 활용
 
