@@ -1,0 +1,2 @@
+﻿center_lat,center_lng,search_radius_m,cctv_count_1km,streetlight_count_1km,bell_count_1km,police_count_1km,safety_score,tile_cost,grade
+37.54,127.082,1000,282,578,242,2,100,0,A
