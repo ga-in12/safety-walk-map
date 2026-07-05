@@ -10,6 +10,9 @@ from haversine import haversine
 input_path = Path("data/raw/광진구_안전시설_통합.csv") #입력 데이터 경로
 processed_dir = Path("data/processed") #처리결과저장폴더
 processed_dir.mkdir(parents = True, exist_ok = True)# processed 폴더가 없으면 자동으로 생성
+output_dir = Path('outputs')
+output_dir.mkdir(parents = True, exist_ok = True) 
+
 
 
 #데이터 불러오기
@@ -427,3 +430,12 @@ ax.legend(loc='upper right')
 ax.grid(True)
 
 plt.show()
+
+
+#히트맵 이미지 저장
+#저장 경로 설정 
+output_path = output_dir/ 'single_point_heatmap.png'
+#저장 #fig라는 변수에 담긴 그림을 output+path위치에 저장해라 
+fig.savefig(output_path,  
+            dpi = 300, #해상도
+            bbox_inches = 'tight') #그림 주변의 쓸데없는 여백을 줄여서 저장
