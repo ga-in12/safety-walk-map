@@ -1,7 +1,7 @@
 import osmnx as ox
 import os
 
-# 1. 그래프 다운로드 (이미 저장된 파일 있으면 재사용)
+# 1. 그래프 다운로드 
 place = "Gwangjin-gu, Seoul, South Korea"
 graph_path = "gwangjin.graphml"
 
