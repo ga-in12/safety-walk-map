@@ -1,44 +1,50 @@
-# 광진구 격자점 생성 + folium 지도 시각화 + 안전시설물 표시
-# -> 안전지수 계산 전에, 광진구 지도 위에서 격자 간격과 시설 분포를 확인하기 위한 스크립트
+# 광진구 격자별 안전점수 계산 + Folium 히트맵 생성
+# 기존 단일점 안전지수 계산 코드를 "격자점 여러 개"에 반복 적용하는 버전
 
 import folium
 import numpy as np
 import pandas as pd
 from pathlib import Path
+from haversine import haversine
 
 
-# =========================
+# =========================================================
 # 0. 경로 설정
-# =========================
+# =========================================================
 
-# 안전시설 통합 데이터 경로
+# 안전시설 통합 데이터
 input_path = Path("data/raw/광진구_안전시설_통합.csv")
 
-# 결과 저장 폴더
-output_dir = Path("outputs")
-output_dir.mkdir(parents=True, exist_ok=True)
+# 이전 단계에서 만든 광진구 격자점 데이터
+grid_input_path = Path("data/processed/gwangjin_grid_points.csv")
 
-# 처리 데이터 저장 폴더
+# 처리 결과 저장 폴더
 processed_dir = Path("data/processed")
 processed_dir.mkdir(parents=True, exist_ok=True)
 
+# 지도 결과 저장 폴더
+output_dir = Path("outputs")
+output_dir.mkdir(parents=True, exist_ok=True)
 
-# =========================
-# 1. 안전시설 데이터 불러오기
-# =========================
+
+# =========================================================
+# 1. 데이터 불러오기
+# =========================================================
 
 facilities_data = pd.read_csv(input_path, encoding="utf-8-sig")
+grid_data = pd.read_csv(grid_input_path, encoding="utf-8-sig")
 
-print("시설 데이터 확인")
-print(facilities_data.head())
 print("시설 데이터 개수:", len(facilities_data))
-print("시설유형 목록:", facilities_data["시설유형"].unique())
+print("격자점 개수:", len(grid_data))
+print("격자점 데이터 확인")
+print(grid_data.head())
 
 
-# =========================
+# =========================================================
 # 2. 광진구 실제 경계 폴리곤
 # 좌표 순서: (경도, 위도)
-# =========================
+# 지도에 경계 표시용으로 사용
+# =========================================================
 
 gwangjin_polygon = [
     (127.08068541280403, 37.56906425519017), (127.08553261581505, 37.56856310839328),
@@ -58,111 +64,229 @@ gwangjin_polygon = [
 ]
 
 
-# =========================
-# 3. 광진구 경계 범위 구하기
-# =========================
+# =========================================================
+# 3. 지도 중심 좌표 계산
+# =========================================================
 
 lngs = [p[0] for p in gwangjin_polygon]
 lats = [p[1] for p in gwangjin_polygon]
 
-lat_min, lat_max = min(lats), max(lats)
-lng_min, lng_max = min(lngs), max(lngs)
-
-# 지도 중심 좌표
-center_lat = (lat_min + lat_max) / 2
-center_lng = (lng_min + lng_max) / 2
+center_lat = (min(lats) + max(lats)) / 2
+center_lng = (min(lngs) + max(lngs)) / 2
 
 
-# =========================
-# 4. 점이 광진구 내부에 있는지 확인하는 함수
-# =========================
+# =========================================================
+# 4. 안전지수 계산 설정
+# =========================================================
 
-def point_in_polygon(lng, lat, poly):
+# 반경 500m 안의 시설을 세기
+radius_km = 0.5
+
+# 시설유형별 가중치
+# 총합 100점
+safety_weight_dict = {
+    "CCTV": 35,
+    "가로등": 30,
+    "비상벨": 20,
+    "경찰서": 15
+}
+
+# 시설유형별 만점 기준 개수
+# 예: CCTV가 50개 이상이면 CCTV 점수는 35점 만점
+max_count_dict = {
+    "CCTV": 50,
+    "가로등": 100,
+    "비상벨": 20,
+    "경찰서": 2
+}
+
+
+# =========================================================
+# 5. 거리 계산 함수
+# =========================================================
+
+def haversine_distance(lat1, lng1, lat2, lng2):
     """
-    점이 폴리곤 내부에 있는지 확인하는 함수
-
-    lng: 경도
-    lat: 위도
-    poly: [(경도, 위도), ...] 형태의 폴리곤 좌표 리스트
+    위도/경도를 이용해서 두 지점 사이의 거리(km)를 계산하는 함수
     """
-    n = len(poly)
-    inside = False
-    j = n - 1
-
-    for i in range(n):
-        xi, yi = poly[i]
-        xj, yj = poly[j]
-
-        if ((yi > lat) != (yj > lat)) and (
-            lng < (xj - xi) * (lat - yi) / (yj - yi) + xi
-        ):
-            inside = not inside
-
-        j = i
-
-    return inside
+    return haversine((lat1, lng1), (lat2, lng2), unit="km")
 
 
-# =========================
-# 5. 격자 간격 설정
-# =========================
+def add_km_columns(target_lat, target_lng, facilities_data):
+    """
+    하나의 격자점을 기준으로 모든 시설과의 거리(km)를 계산해서
+    km 컬럼을 추가한 데이터프레임을 반환하는 함수
+    """
+    facilities_data = facilities_data.copy()
 
-# 격자점 사이 간격
-# 500이면 500m마다 점 생성
-# 250이면 250m마다 점 생성
-grid_interval_m = 500
+    if "km" in facilities_data.columns:
+        facilities_data = facilities_data.drop("km", axis=1)
 
-# 위도 1도는 약 111km
-lat_step = grid_interval_m / 111000
+    km_list = []
 
-# 경도 1도는 위도에 따라 달라짐
-lng_step = grid_interval_m / (111000 * np.cos(np.radians(center_lat)))
+    for i in range(len(facilities_data)):
+        facility_lat = facilities_data.iloc[i]["위도"]
+        facility_lng = facilities_data.iloc[i]["경도"]
 
+        distance = haversine_distance(
+            target_lat,
+            target_lng,
+            facility_lat,
+            facility_lng
+        )
 
-# =========================
-# 6. 광진구 내부 격자점 생성
-# =========================
+        km_list.append(distance)
 
-lat_points = np.arange(lat_min, lat_max, lat_step)
-lng_points = np.arange(lng_min, lng_max, lng_step)
+    facilities_data["km"] = km_list
 
-grid_points = []
-
-for lat in lat_points:
-    for lng in lng_points:
-
-        # 광진구 폴리곤 내부에 있는 점만 저장
-        if point_in_polygon(lng, lat, gwangjin_polygon):
-            grid_points.append((lat, lng))
-
-print(f"격자 간격: {grid_interval_m}m")
-print(f"격자점 개수: {len(grid_points)}개")
-print(f"위도 방향 후보 개수: {len(lat_points)}")
-print(f"경도 방향 후보 개수: {len(lng_points)}")
+    return facilities_data
 
 
-# =========================
-# 7. 격자점 CSV 저장
-# =========================
+# =========================================================
+# 6. 안전점수 계산 함수
+# =========================================================
 
-grid_data = pd.DataFrame(grid_points, columns=["위도", "경도"])
-grid_data.insert(0, "grid_id", range(len(grid_data)))
+def calculate_safety_score(facility_counts, safety_weight_dict, max_count_dict):
+    """
+    시설유형별 개수를 이용해서 안전점수를 계산하는 함수
 
-grid_csv_path = processed_dir / "gwangjin_grid_points.csv"
+    facility_counts 예시:
+    CCTV      50
+    가로등     80
+    비상벨     12
+    경찰서      1
+    """
 
-grid_data.to_csv(
-    grid_csv_path,
+    safety_score = 0
+
+    # 기존 코드보다 안정적인 방식
+    # facility_counts에 없는 시설은 0개로 계산
+    for facility in safety_weight_dict.keys():
+
+        num = facility_counts.get(facility, 0)
+        weight = safety_weight_dict[facility]
+        max_num = max_count_dict[facility]
+
+        ratio = num / max_num
+
+        # 만점 기준 이상이면 1로 고정
+        if ratio >= 1:
+            ratio = 1
+
+        safety_score = safety_score + ratio * weight
+
+    return safety_score
+
+
+def convert_score_to_grade(safety_score):
+    """
+    안전점수를 A~E 등급으로 변환하는 함수
+    """
+    if safety_score >= 85:
+        return "A"
+    elif safety_score >= 70:
+        return "B"
+    elif safety_score >= 55:
+        return "C"
+    elif safety_score >= 40:
+        return "D"
+    else:
+        return "E"
+
+
+# =========================================================
+# 7. 모든 격자점에 대해 안전점수 계산
+# =========================================================
+
+result_list = []
+
+for i in range(len(grid_data)):
+
+    # 현재 격자점 정보 가져오기
+    grid_id = grid_data.iloc[i]["grid_id"]
+    target_lat = grid_data.iloc[i]["위도"]
+    target_lng = grid_data.iloc[i]["경도"]
+
+    # 현재 격자점을 기준으로 모든 시설과의 거리 계산
+    facilities_km_data = add_km_columns(
+        target_lat,
+        target_lng,
+        facilities_data
+    )
+
+    # 500m 이내 시설만 선택
+    under_radius_data = facilities_km_data[
+        facilities_km_data["km"] <= radius_km
+    ]
+
+    # 500m 이내 시설유형별 개수 세기
+    facility_counts = under_radius_data["시설유형"].value_counts()
+
+    # 안전점수 계산
+    safety_score = calculate_safety_score(
+        facility_counts,
+        safety_weight_dict,
+        max_count_dict
+    )
+
+    # 안전등급 계산
+    safety_grade = convert_score_to_grade(safety_score)
+
+    # 결과 한 줄 저장
+    result_list.append({
+        "grid_id": grid_id,
+        "위도": target_lat,
+        "경도": target_lng,
+        "반경_km": radius_km,
+        "CCTV개수": facility_counts.get("CCTV", 0),
+        "가로등개수": facility_counts.get("가로등", 0),
+        "비상벨개수": facility_counts.get("비상벨", 0),
+        "경찰서개수": facility_counts.get("경찰서", 0),
+        "전체시설개수": len(under_radius_data),
+        "안전점수": safety_score,
+        "안전등급": safety_grade
+    })
+
+    # 진행상황 출력
+    print(f"{i + 1}/{len(grid_data)} 계산 완료 - grid_id: {grid_id}, 점수: {safety_score:.1f}, 등급: {safety_grade}")
+
+
+# 리스트를 데이터프레임으로 변환
+safety_grid_data = pd.DataFrame(result_list)
+
+print("격자별 안전점수 결과 확인")
+print(safety_grid_data.head())
+
+
+# =========================================================
+# 8. safety_grid.csv 저장
+# =========================================================
+
+safety_grid_output_path = processed_dir / "safety_grid.csv"
+
+safety_grid_data.to_csv(
+    safety_grid_output_path,
     index=False,
     encoding="utf-8-sig"
 )
 
-print(f"격자점 CSV 저장 완료: {grid_csv_path}")
+print("격자별 안전점수 CSV 저장 완료:", safety_grid_output_path)
 
 
-# =========================
-# 8. 시설유형별 지도 표시 스타일 설정
-# =========================
+# =========================================================
+# 9. Folium 히트맵 지도 만들기
+# =========================================================
 
+# 등급별 색깔
+grade_color_dict = {
+    "A": "green",
+    "B": "yellowgreen",
+    "C": "yellow",
+    "D": "orange",
+    "E": "red"
+}
+
+# 시설유형별 색깔
 facility_color_dict = {
     "CCTV": "blue",
     "가로등": "orange",
@@ -170,14 +294,7 @@ facility_color_dict = {
     "경찰서": "purple"
 }
 
-# 혹시 예상하지 못한 시설유형이 있으면 회색으로 표시
-default_facility_color = "gray"
-
-
-# =========================
-# 9. folium 지도 생성
-# =========================
-
+# 지도 생성
 m = folium.Map(
     location=[center_lat, center_lng],
     zoom_start=14,
@@ -185,10 +302,9 @@ m = folium.Map(
 )
 
 
-# =========================
+# =========================================================
 # 10. 광진구 경계선 표시
-# folium은 [위도, 경도] 순서
-# =========================
+# =========================================================
 
 folium.Polygon(
     locations=[[lat, lng] for lng, lat in gwangjin_polygon],
@@ -196,26 +312,97 @@ folium.Polygon(
     weight=3,
     fill=True,
     fill_color="lightblue",
-    fill_opacity=0.12,
+    fill_opacity=0.08,
     tooltip="광진구 경계"
 ).add_to(m)
 
 
-# =========================
-# 11. 격자점 레이어 만들기
-# =========================
+# =========================================================
+# 11. 격자 히트맵 레이어 표시
+# =========================================================
+
+# 격자 한 칸 크기
+# 이전에 격자 간격을 500m로 만들었기 때문에, 시각화도 500m x 500m 정도로 표현
+cell_size_km = 0.5
+
+# 위도/경도 1도의 km 거리
+km_per_lat_degree = haversine(
+    (center_lat, center_lng),
+    (center_lat + 1, center_lng),
+    unit="km"
+)
+
+km_per_lng_degree = haversine(
+    (center_lat, center_lng),
+    (center_lat, center_lng + 1),
+    unit="km"
+)
+
+# 사각형 반 칸 크기
+half_cell_lat = (cell_size_km / 2) / km_per_lat_degree
+half_cell_lng = (cell_size_km / 2) / km_per_lng_degree
+
+
+heatmap_layer = folium.FeatureGroup(name="안전등급 히트맵")
+
+for i in range(len(safety_grid_data)):
+
+    row = safety_grid_data.iloc[i]
+
+    lat = row["위도"]
+    lng = row["경도"]
+    grade = row["안전등급"]
+    score = row["안전점수"]
+
+    color = grade_color_dict.get(grade, "gray")
+
+    # 사각형 꼭짓점 좌표
+    # folium.Rectangle은 [[남서쪽], [북동쪽]] 좌표 사용
+    bounds = [
+        [lat - half_cell_lat, lng - half_cell_lng],
+        [lat + half_cell_lat, lng + half_cell_lng]
+    ]
+
+    tooltip_text = f"""
+    grid_id: {row['grid_id']}<br>
+    안전점수: {score:.1f}<br>
+    안전등급: {grade}<br>
+    CCTV: {row['CCTV개수']}개<br>
+    가로등: {row['가로등개수']}개<br>
+    비상벨: {row['비상벨개수']}개<br>
+    경찰서: {row['경찰서개수']}개<br>
+    전체시설: {row['전체시설개수']}개
+    """
+
+    folium.Rectangle(
+        bounds=bounds,
+        color=color,
+        weight=1,
+        fill=True,
+        fill_color=color,
+        fill_opacity=0.45,
+        tooltip=tooltip_text
+    ).add_to(heatmap_layer)
+
+heatmap_layer.add_to(m)
+
+
+# =========================================================
+# 12. 격자점 표시 레이어
+# =========================================================
 
 grid_layer = folium.FeatureGroup(name="격자점")
 
-for i in range(len(grid_data)):
-    row = grid_data.iloc[i]
+for i in range(len(safety_grid_data)):
+
+    row = safety_grid_data.iloc[i]
 
     folium.CircleMarker(
         location=[row["위도"], row["경도"]],
-        radius=3,
-        color="crimson",
+        radius=2,
+        color="black",
         fill=True,
-        fill_color="crimson",
+        fill_color="black",
         fill_opacity=0.8,
         tooltip=f"grid_id: {row['grid_id']}"
     ).add_to(grid_layer)
@@ -223,32 +410,27 @@ for i in range(len(grid_data)):
 grid_layer.add_to(m)
 
 
-# =========================
-# 12. 시설물 레이어 만들기
-# 시설유형별로 따로 레이어를 만들어서 지도에서 켜고 끌 수 있게 함
-# =========================
+# =========================================================
+# 13. 시설물 표시 레이어
+# =========================================================
 
 for facility_type in facilities_data["시설유형"].unique():
 
-    # 특정 시설유형만 선택
     one_type_data = facilities_data[
         facilities_data["시설유형"] == facility_type
     ]
 
-    # 시설유형별 레이어
     facility_layer = folium.FeatureGroup(name=f"{facility_type}")
 
-    # 색상 설정
-    marker_color = facility_color_dict.get(facility_type, default_facility_color)
+    marker_color = facility_color_dict.get(facility_type, "gray")
 
     for i in range(len(one_type_data)):
+
         row = one_type_data.iloc[i]
 
-        # 위도/경도 결측치가 있으면 건너뛰기
         if pd.isna(row["위도"]) or pd.isna(row["경도"]):
             continue
 
-        # 팝업 내용 만들기
         popup_text = f"""
         <b>시설유형:</b> {row['시설유형']}<br>
         <b>시설명:</b> {row.get('시설명', '')}<br>
@@ -259,11 +441,11 @@ for facility_type in facilities_data["시설유형"].unique():
 
         folium.CircleMarker(
             location=[row["위도"], row["경도"]],
-            radius=4,
+            radius=3,
             color=marker_color,
             fill=True,
             fill_color=marker_color,
-            fill_opacity=0.75,
+            fill_opacity=0.7,
             popup=folium.Popup(popup_text, max_width=300),
             tooltip=facility_type
         ).add_to(facility_layer)
@@ -271,65 +453,70 @@ for facility_type in facilities_data["시설유형"].unique():
     facility_layer.add_to(m)
 
 
-# =========================
-# 13. 예시로 가운데 격자점에 500m 반경 표시
-# =========================
+# =========================================================
+# 14. 예시 500m 계산 반경 원 표시
+# =========================================================
 
-sample_index = len(grid_data) // 2
-sample_row = grid_data.iloc[sample_index]
+sample_index = len(safety_grid_data) // 2
+sample_row = safety_grid_data.iloc[sample_index]
 
 folium.Circle(
     location=[sample_row["위도"], sample_row["경도"]],
     radius=500,
-    color="red",
+    color="black",
     weight=2,
     fill=False,
     tooltip="500m 계산 반경 예시"
 ).add_to(m)
 
 
-# =========================
-# 14. 범례 추가
-# =========================
+# =========================================================
+# 15. 범례 추가
+# =========================================================
 
 legend_html = """
 <div style="
     position: fixed;
     bottom: 40px;
     left: 40px;
-    width: 170px;
+    width: 190px;
     background-color: white;
     border: 2px solid gray;
     z-index: 9999;
     font-size: 14px;
     padding: 10px;
 ">
-<b>지도 범례</b><br>
-<span style="color:crimson;">●</span> 격자점<br>
+<b>안전등급 범례</b><br>
+<span style="color:green;">■</span> A 등급<br>
+<span style="color:yellowgreen;">■</span> B 등급<br>
+<span style="color:yellow;">■</span> C 등급<br>
+<span style="color:orange;">■</span> D 등급<br>
+<span style="color:red;">■</span> E 등급<br>
+<hr>
+<span style="color:black;">●</span> 격자점<br>
 <span style="color:blue;">●</span> CCTV<br>
 <span style="color:orange;">●</span> 가로등<br>
 <span style="color:red;">●</span> 비상벨<br>
 <span style="color:purple;">●</span> 경찰서<br>
-<span style="color:gray;">━</span> 광진구 경계<br>
 </div>
 """
 
 m.get_root().html.add_child(folium.Element(legend_html))
 
 
-# =========================
-# 15. 레이어 컨트롤 추가
-# =========================
+# =========================================================
+# 16. 레이어 컨트롤 추가
+# =========================================================
 
 folium.LayerControl().add_to(m)
 
 
-# =========================
-# 16. 지도 저장
-# =========================
+# =========================================================
+# 17. 지도 저장
+# =========================================================
 
-output_path = output_dir / "gwangjin_grid_facilities_preview.html"
+heatmap_output_path = output_dir / "gwangjin_safety_heatmap.html"
 
-m.save(output_path)
+m.save(heatmap_output_path)
 
-print(f"시설물 포함 지도 저장 완료: {output_path}")
+print("격자별 안전 히트맵 저장 완료:", heatmap_output_path)
