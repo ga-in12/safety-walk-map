@@ -889,8 +889,8 @@ result_df.to_csv(processed_dir/ 'safety_score_result_csv.csv', index = False)
 
 
 
-############### UI담당을 위해 #######################
-
+############### UI담당을 위해 GeoJson형으로 저장하기 #######################
+#GeoJson: 지도 위의 위치, 선, 영역을 저장할 수 있도록 만든 JSON 형식의 파일 -> 이를 불러오면 geoDatafram(csv파일과 다르게 도형 모양 정보 존재)
 # result_df의 각 행마다 잘린 cell polygon을 만들어서 geometry 컬럼 추가
 geometries = []
 for _, row in result_df.iterrows():
@@ -936,5 +936,5 @@ facility_data에 이 데이터를 합쳐서 counting_facility가 광진구 밖 �
 
 
 
-
+#성동구, 동대문구, 중랑구, 강동구, 송파구, 강남구, 구리시(구리시도 가능한감...ㅜㅜ)
 
