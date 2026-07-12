@@ -20,6 +20,7 @@ import folium
 from pyproj import Geod
 from shapely.geometry import box #4개의 모서리 숫자를 사각형 polygon객체 하나로 반환할때 쓰이
 from shapely.geometry import box, mapping #지도그리기
+import geopandas as gpd #GeoJSON으로 저장
 
 ################### 경로 설정 ###################
 
@@ -372,11 +373,6 @@ for lat in np.arange(min_lat,
                     cell_size_lat): #500m간격으로 리스트 만들기(위도단위)
     lat_list.append(lat)
 
-print('[위도 지점 리스트]')
-print(lat_list)
-print('[위도 지점 개수]')
-print(len(lat_list))
-print()
 
 
 #경도 지점 리스트(가로)
@@ -386,19 +382,20 @@ for lng in np.arange(min_lng,
                      cell_size_lng):
     lng_list.append(lng)
 
-print('[경도 지점 리스트]')
-print(lng_list)
-print('[경도 지점 개수]')
-print(len(lng_list))
-print()
+
 
 
 #위도지점리스트(lat_list), 경도지점리스트(lng_list)를 이용하여 격자 지점 튜플 리스트 만들기
+####행, 열 정보도 저장(추후 경로 알고리즘 구현을 위해)
 point_list = [] #격자 튜플을 저장할 리스트
 
-for lat in lat_list:
-    for lng in lng_list:
-        point_list.append((lat, lng))
+
+# row_index: 위도 방향(세로) 순서 -> 몇 번째 '행'인지
+# col_index: 경도 방향(가로) 순서 -> 몇 번째 '열'인지
+for row_index, lat in enumerate(lat_list):
+    for col_index, lng in enumerate(lng_list):
+        point_list.append((lat, lng, row_index, col_index))
+
 
 print('[격자점 (위도,경도)]')
 print(point_list[:5])
@@ -414,7 +411,7 @@ print()
 ######################## 격자점을 지도 위에 십자(+) 모양으로 표시하는 함수 ################
 def add_grid_point_cross_markers(map):
     #(점이 여러개이므로 반복문으로 구현)
-    for lat, lng in point_list:
+    for lat, lng, row_index, col_index in point_list:
 
         folium.Marker(
             location=[lat, lng],
@@ -491,6 +488,7 @@ def make_cell_polygon(point_lat, point_lng):
 
 
 
+
 ################## 지도 위에 시설물 점 찍는 함수 ################
 #시설물 데이터 불러오기 
 facility_data = pd.read_csv(facility_path, encoding= 'utf-8-sig')
@@ -557,13 +555,11 @@ def add_facility_circle_markers(map, facility_data):
 
 
 
-###
-##
-###
-###
-###
+
+
+
+
 ################## 격자 cell을 안전등급 색깔로 채워서 지도에 표시하는 함수 ##################
-# + 
 def add_grid_cells_with_safety_color(map, result_df, gwangjin_polygon_4326):
 
     for _, row in result_df.iterrows(): #결과물 dataframe한 행씩 순회하며........
@@ -760,7 +756,7 @@ grade_color_dict = {
 # #################### 모든 격자점 안전점수 계산 ####################
 # dataframe에 해당 격자점 정보 저장
 result_columns = [
-    '격자번호', '중심위도', '중심경도',
+    '격자번호', '행번호', '열번호', '중심위도', '중심경도',
     '격자한변길이_m', '격자전체면적_m2',
     'CCTV개수','가로등개수', '비상벨개수','경찰서개수','지구대개수','파출소개수','전체시설개수',
     '안전점수', '안전등급', '등급색상'
@@ -779,7 +775,7 @@ total_point_count = len(point_list)
 
 #격자점 리스트 순회
 #enumerate(): 각 값앞에 번호를 붙여줌(ex: point_number)
-for point_number, (point_lat, point_lng) in enumerate(
+for point_number, (point_lat, point_lng, row_index, col_index) in enumerate(
     point_list,
     start=1 #번호를 0번 부터가 아닌 1번부터 붙이기!
 ):
@@ -826,6 +822,8 @@ for point_number, (point_lat, point_lng) in enumerate(
     #현재 격자의 결과를 딕셔너리 형태로 저장
     cell_result_dict = {
         '격자번호': point_number,
+        '행번호': row_index,
+        '열번호': col_index,
         '중심위도': point_lat,
         '중심경도': point_lng,
         '격자한변길이_m': cell_size_m,
@@ -887,7 +885,50 @@ gwangjin_map.show_in_browser()
 gwangjin_map.save(output_dir/ 'gwangjin_safety_map.html')
 result_df.to_csv(processed_dir/ 'safety_score_result_csv.csv', index = False)
 
+
+
+
+
+############### UI담당을 위해 #######################
+
+# result_df의 각 행마다 잘린 cell polygon을 만들어서 geometry 컬럼 추가
+geometries = []
+for _, row in result_df.iterrows():
+    cell_polygon = make_cell_polygon(row['중심위도'], row['중심경도'])
+    clipped = cell_polygon.intersection(gwangjin_polygon_4326)
+    geometries.append(clipped)
+
+result_gdf = gpd.GeoDataFrame(result_df, geometry=geometries, crs='EPSG:4326')
+
+# 웹 UI 팀원에게 줄 GeoJSON 저장
+result_gdf.to_file(output_dir / 'gwangjin_safety_grid.geojson', driver='GeoJSON')
+
+# 시설물 데이터도 GeoJSON으로 (지도에 마커 찍을 때 필요)
+facility_gdf = gpd.GeoDataFrame(
+    facility_data,
+    geometry=gpd.points_from_xy(facility_data['경도'], facility_data['위도']),
+    crs='EPSG:4326'
+)
+facility_gdf.to_file(output_dir / 'gwangjin_facilities.geojson', driver='GeoJSON')
+
+
+
+
+
+
+
+
+
+
+
+
+
 ########### 면적보정 vs 실제 데이터 더 수집하기... ####################
+'''
+광진구와 맞닿은 동들(성동구, 중랑구, 동대문구, 강동구 등 접경 동)의 안전시설 데이터를 추가 수집
+facility_data에 이 데이터를 합쳐서 counting_facility가 광진구 밖 시설도 셀 수 있게 함
+단, gwangjin_polygon_4326(경계 자르기용)은 그대로 광진구만 유지 — 그래야 "지도에 보여줄 영역"은 광진구로 고정하면서 "시설 카운트"는 주변까지 포함하는 구조가 됨
+'''
 ##면적 보정 방법은 claude에 있음
 
 
