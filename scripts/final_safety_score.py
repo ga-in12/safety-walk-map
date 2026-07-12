@@ -1,87 +1,752 @@
-# =========================================================
-# 광진구 경계 기반 500m 격자 생성
-# + 격자 polygon 안 시설 개수 계산
-# + 경계 격자 면적 보정
-# + 자투리 격자 제거 없음
-# + 안전점수 계산
-# + Folium 지도 생성
-#
-# 핵심:
-# - 500m x 500m 격자를 만든다.
-# - 광진구 경계와 겹치는 부분만 잘라서 사용한다.
-# - 경계 때문에 잘린 작은 격자도 제거하지 않는다.
-# - 잘린 격자는 실제 면적비율로 시설 개수를 보정한다.
-#
-# 보정개수 = 실제개수 / area_ratio
-# area_ratio = 실제 격자 면적 / 250000
-# =========================================================
+'''
+흐름
 
-import json
-from pathlib import Path
+1. 광진구 안전시설 데이터 경로 설정
+2. 법정동 경계 SHP 파일 불러오기
+3. 전체 경계 중 광진구에 속한 동만 선택
+4. 광진구 동 경계를 하나로 합치기
+5. 미터 단위 경계와 위도·경도 단위 경계를 따로 만들기
+6. Matplotlib으로 광진구 경계 확인
+7. Folium 지도 위에 광진구 경계 표시
+8. 이후 500m 격자 생성
+'''
 
 import numpy as np
 import pandas as pd
+from pathlib import Path
 import geopandas as gpd
+import matplotlib.pyplot as plt
 import folium
+from pyproj import Geod
+from shapely.geometry import box #4개의 모서리 숫자를 사각형 polygon객체 하나로 반환할때 쓰이
+from shapely.geometry import box, mapping #지도그리기
 
-from shapely.geometry import box, Polygon
-from shapely.ops import unary_union
+################### 경로 설정 ###################
+
+# 시설물 통합 CSV 경로
+facility_path = Path(
+    'data/raw/광진구_안전시설_통합.csv'
+)
+
+# 법정동 경계 파일 폴더
+boundary_dir = Path(
+    'data/raw/boundary/lgldong'
+)
+
+# 가공 데이터 저장 폴더
+processed_dir = Path(
+    'data/processed'
+)
+
+processed_dir.mkdir(
+    parents=True,
+    exist_ok=True
+)
+
+# 결과 지도와 이미지 저장 폴더
+output_dir = Path(
+    'outputs'
+)
+
+output_dir.mkdir(
+    parents=True,
+    exist_ok=True
+)
 
 
-# =========================================================
-# 0. 경로 설정
-# =========================================================
-
-# 현재 파일 위치 예시:
-# safety-walk-map/scripts/final_safety_score_polygon_area_corrected_no_drop.py
-# BASE_DIR = safety-walk-map 폴더
-BASE_DIR = Path(__file__).resolve().parents[1]
-
-# 시설물 통합 CSV
-facility_path = BASE_DIR / "data" / "raw" / "광진구_안전시설_통합.csv"
-
-# 광진구 경계 SHP 폴더
-boundary_dir = BASE_DIR / "data" / "raw" / "boundary" / "lgldong"
-
-# 저장 폴더
-processed_dir = BASE_DIR / "data" / "processed"
-output_dir = BASE_DIR / "outputs"
-
-processed_dir.mkdir(parents=True, exist_ok=True)
-output_dir.mkdir(parents=True, exist_ok=True)
 
 
-# =========================================================
-# 1. 설정값
-# =========================================================
 
-# 격자 한 칸 크기: 500m x 500m
+################### 설정값 ###################
+#all_boundary_gdf = 전국 동 경계 geoDataframe
+#gwangjin_dong_boundary_gdf = 광진구 동 경계 geoDataframe
+#gwangjin_boundary_5186_gdf = 광진구 동 합친 경계 geoDatframe(m단위)
+#gwangjin_boundary_4326_gdf = 광진구 동 합친 경계 geoDataframe(위도/경도단위)
+#gwangjin_map = 광진구 중심 기준으로 한 map + 
+#               gwangjin_boundary_4326_gdf을 이용하여 광진구 경계까지 그림
+
+
+
+#cell_size_m = 격자 한 칸의 가로·세로 길이(m)
+#center_lat = 광진구 중심 위도
+#center_lng = 광진구 중심 경도
+#lat_per_1m= 1m당 위도 변화량(광진구 중심점 기준으로 변환)
+#lng_per_1m= 1m당 경도 변화량 
+#cell_size_lat= 격자 길이당 위도 변화량(500m)
+#cell_size_lng= 격자 길이당 경도 변화량(500m)
+
+
+#lat_list= 위도 지점 리스트
+#lng_list= 경도 지점 리스트
+#point_list = 격자점 튜플 리스트
+
+#def make_cell_polygon(point_lat, point_lng)= 격자점 기준으로 하나의 사각형cell 반환(box)
+#def counting_facility(cell_polygon, facility_data)= 해당 cell안에 포함되는 시설물들만 세기
+#def calculate_safety_score_cell(cell_polygon)= 격자 cell하나의 안전점수 계산하기
+#def define_grade(safety_score)= 안전점수 기반 grade지정
+
+
+
+#facility_data= 광진구 시설물 데이터
+#safety_weight_dict= 안점점수 가중치 딕셔너리
+#max_count_dict= 시설별 만점기준 개수 딕셔너리
+#grade_color_dict= 안전등급별 색깔
+
+
+
+#지도 관련 함수
+#def make_gwangjing_map()= 광진구 지도 생성해주는 함수
+#def add_gwaingjin_whole_square(map)= 광진구 경계를 감싸는 큰 사각형 만드는 함수
+#def add_grid_point_cross_markers(map)= 격자점을 지도 위에 십자(+) 모양으로 표시하는 함수
+#def add_facility_circle_markers(map, facility_data)= 지도 위에 시설물 점 찍는 함수
+#def add_grid_cells_with_safety_color(map, result_df, gwangjin_polygon_4326)= 격자 cell을 안전등급 색깔로 채워서 지도에 표시하는 함수
+
+
+
+#결과물 
+#reuslt_df= 격자마다의 정보 dataframe
+
+
+
+
+
+################### 법정동 경계 파일 불러오기 ###################
+
+# SHP 파일 경로
+shp_file = (
+    boundary_dir
+    / 'admstr_zone_lgldong_bndry_24.shp'
+)
+
+
+# SHP 파일을 GeoDataFrame으로 불러오기
+# 여기에는 광진구뿐 아니라 다른 지역의 경계도 들어 있음
+all_boundary_gdf = gpd.read_file(
+    shp_file,
+    encoding='cp949'
+)
+
+
+print(
+    '[전체 법정동 경계 GeoDataFrame]'
+)
+
+#자료 형태 확인
+print(
+    all_boundary_gdf.head()
+)
+
+#어떤 좌표계를 사용하는지 확인
+print(
+    '전체 경계 좌표계:',
+    all_boundary_gdf.crs,
+    '''
+
+    '''
+)
+
+
+
+
+################### 광진구에 속한 동 경계만 선택 ###################
+
+# COL_ADM_SE는 시군구 코드
+# 광진구 시군구 코드는 11215
+gwangjin_dong_boundary_gdf = all_boundary_gdf[
+    all_boundary_gdf['COL_ADM_SE'] == '11215' #True/False
+]
+
+
+print(
+    '\n[광진구 동 경계 GeoDataFrame]'
+)
+
+print(
+    gwangjin_dong_boundary_gdf.head()
+)
+
+print(
+    '광진구 동 개수:',
+    len(gwangjin_dong_boundary_gdf)
+)
+
+print(
+    '광진구 동 경계 좌표계:',
+    gwangjin_dong_boundary_gdf.crs,
+    '''
+
+    '''
+)
+
+
+
+
+################### 광진구 동 경계를 하나로 합치기 ###################
+
+# 여러 동의 경계선을 모두 합쳐서
+# 내부의 동 경계선을 없애고 하나의 광진구 모양으로 만듦
+gwangjin_polygon = gwangjin_dong_boundary_gdf.union_all() #이때, union_all함수 때문에 자료형이 polygon이 됨
+
+
+
+
+################### 광진구 전체 경계 GeoDataFrame 만들기 ###################
+
+# union_all()의 결과는 Polygon이므로
+# plot, 좌표계 변환 등을 편하게 하기 위해
+# 다시 GeoDataFrame으로 감싸줌
+#
+# 현재 좌표계는 EPSG:5186
+# 좌표값과 거리, 면적의 단위는 m 기준
+gwangjin_boundary_5186_gdf = gpd.GeoDataFrame(
+    {
+        "name": ["광진구"]
+    },
+    geometry=[
+        gwangjin_polygon
+    ],
+    crs=gwangjin_dong_boundary_gdf.crs #다시 geoDataFrame으로 고침
+)
+
+
+print(
+    '\n[광진구 전체 경계 EPSG:5186]'
+)
+
+print(
+    gwangjin_boundary_5186_gdf.head()
+)
+
+print(
+    '좌표계:',
+    gwangjin_boundary_5186_gdf.crs,
+    '''
+
+    '''
+)
+
+
+# Folium 지도 표시용으로 위도·경도 좌표계 변환
+gwangjin_boundary_4326_gdf = (
+    gwangjin_boundary_5186_gdf
+    .to_crs(epsg=4326)
+)
+
+
+print(
+    '\n[광진구 전체 경계 EPSG:4326]'
+)
+
+print(
+    gwangjin_boundary_4326_gdf.head()
+)
+
+print(
+    '좌표계:',
+    gwangjin_boundary_4326_gdf.crs
+)
+
+
+
+
+################### Folium 지도 생성 함수#################
+def make_gwangjing_map():
+    map = folium.Map(
+    location = [37.5384, 127.0822], #광진구 중심 위도, 경도
+    zoom_start= 13 #확대 정도
+    )
+
+    ################### Folium 지도 위에 광진구 경계 표시 ##################
+    folium.GeoJson( #지도 위에 경계선이나 영역을 올리는 함수
+        data = gwangjin_boundary_4326_gdf,
+        name = '광진구_경계',
+        style_function= lambda _: #lambda함수 반환값 = 딕셔너리
+        {
+            'color': 'black',
+            'weight': 2, #경계선의 굵기
+            'fillOpacity': 0 #경계 안쪽에 채워지는 색의 투명도
+
+        }
+    ).add_to(map)
+
+    return map
+
+#브라우저에서 열어 확인하기 
+#preview_map = make_gwangjin_map() #확인용 임시 맵
+#preview_map.show_in_browser()
+
+
+    
+
+
+
+
+
+
+################## m단위를 위도,경도 단위로 바꾸기 #####################
+#격자 한 칸의 가로, 세로 길이(m)
 cell_size_m = 500
 
-# 500m x 500m 전체 격자 면적
-full_cell_area_m2 = cell_size_m * cell_size_m  # 250,000m²
+#지구 타웜체 기준 거리 계산기
+geod = Geod(ellps = 'WGS84')
 
-# 경계선 근처 좌표 오차 허용 거리
-# 지도 표시/검사용으로 경계 근처 시설까지 포함
-facility_boundary_tolerance_m = 100
+#광진구 중심점
+center_lat = 37.5384
+center_lng = 127.0822
 
-# 시설유형별 가중치
+#중심점에서 북쪽으로 1m이동한 좌표
+north_lng, north_lat, _ = geod.fwd(
+    center_lng, center_lat,
+    0, #이동방향: 북쪽
+    1  #이동거리: 1m
+)
+
+
+#중심점에서 동쪽으로 1m 이동한 좌표
+east_lng, east_lat,_ = geod.fwd(
+    center_lng, center_lat,
+    90, #이동방향: 동쪽
+    1   #이돟거리: 1m
+)
+
+#1m당 위도 변화량
+lat_per_1m = north_lat - center_lat
+#1m당 경도 변화량
+lng_per_1m = east_lng - center_lng
+
+#500m당 위도,경도 변화량
+cell_size_lat = cell_size_m * lat_per_1m
+cell_size_lng = cell_size_m * lng_per_1m
+
+
+
+
+
+
+
+
+################### 광진구 경계를 감싸는 큰 사각형 만드는 함수###################
+#격자점을 어디서부터 어디까지 만들기 정하기
+#모서리
+min_lng, min_lat, max_lng, max_lat = gwangjin_boundary_4326_gdf.total_bounds
+    
+def add_gwaingjin_whole_square(map):
+    
+    #사각형 지도에 표시해서 확인 
+    folium.Rectangle(
+        bounds = [
+            [min_lat, min_lng],
+            [max_lat, max_lng]
+        ],
+        color = 'blue',
+        weight = 2,
+        fill = False,
+        tooltip = '격자생성범위'
+    ).add_to(map)
+    
+    return map
+
+
+#preview_map= make_gwangjin_whole_square(preview_map)
+#preview_map.show_in_browser()
+
+
+
+
+
+
+
+
+
+
+############## 광진구 포괄 사각형 안에서 격자 만들기 + 리스트 생성 ###########
+#격자 간의 간격(위도, 경도) = 500m기준
+#cell_size_lat= 격자 길이당 위도 변화량(500m)
+#cell_size_lng= 격자 길이당 경도 변화량(500m)
+
+
+#위도 지점 리스트(세로)
+lat_list = []
+for lat in np.arange(min_lat,
+                    max_lat + cell_size_lat, #np.arange가 끝값을 포함하지 않는걸 해결
+                    cell_size_lat): #500m간격으로 리스트 만들기(위도단위)
+    lat_list.append(lat)
+
+print('[위도 지점 리스트]')
+print(lat_list)
+print('[위도 지점 개수]')
+print(len(lat_list))
+print()
+
+
+#경도 지점 리스트(가로)
+lng_list = []
+for lng in np.arange(min_lng,
+                     max_lng + cell_size_lng,
+                     cell_size_lng):
+    lng_list.append(lng)
+
+print('[경도 지점 리스트]')
+print(lng_list)
+print('[경도 지점 개수]')
+print(len(lng_list))
+print()
+
+
+#위도지점리스트(lat_list), 경도지점리스트(lng_list)를 이용하여 격자 지점 튜플 리스트 만들기
+point_list = [] #격자 튜플을 저장할 리스트
+
+for lat in lat_list:
+    for lng in lng_list:
+        point_list.append((lat, lng))
+
+print('[격자점 (위도,경도)]')
+print(point_list[:5])
+print('[격자점 개수]')
+print(len(point_list))
+print()
+
+
+
+
+
+
+######################## 격자점을 지도 위에 십자(+) 모양으로 표시하는 함수 ################
+def add_grid_point_cross_markers(map):
+    #(점이 여러개이므로 반복문으로 구현)
+    for lat, lng in point_list:
+
+        folium.Marker(
+            location=[lat, lng],
+
+            icon=folium.DivIcon(
+                html='''
+                    <div style="
+                        font-size: 18px;
+                        font-weight: bold;
+                        color: black;
+                        width: 20px;
+                        height: 20px;
+                        line-height: 20px;
+                        text-align: center;
+                    ">
+                        +
+                    </div>
+                ''',
+
+                # + 표시의 중심이 실제 위도·경도 위치에 오도록 조정
+                icon_size=(20, 20),
+                icon_anchor=(10, 10)
+            )
+        ).add_to(map)
+
+    return map
+
+#preview_map = add_grid_point_cross_markers(preview_map)
+#preview_map.show_in_browser()
+
+
+
+
+
+
+
+
+
+
+
+
+
+################## 격자점마다 검사 구역 지정하기 ##################
+#격자점마다 네모 구간 만드는 함수(함수 이름 적절한 걸로 바꿔줘도 됨)
+def make_cell_polygon(point_lat, point_lng):
+    #구역 모서리 좌표 만들기
+    # 위도 방향: 남쪽과 북쪽
+    min_lat = point_lat - cell_size_lat / 2   # 남쪽
+    max_lat = point_lat + cell_size_lat / 2   # 북쪽
+
+    # 경도 방향: 서쪽과 동쪽
+    min_lng = point_lng - cell_size_lng / 2   # 서쪽
+    max_lng = point_lng + cell_size_lng / 2   # 동쪽
+    
+    #하나의 사각형 polygon 객체 하나를 반환
+    #box 입력 순서: box(서쪽 경도, 남쪽 위도, 동쪽 경도, 북쪽 위도)
+    cell_polygon = box(
+        min_lng, min_lat, max_lng, max_lat
+    )
+
+
+
+    return cell_polygon #자료형 = polygon
+    #ex)POLYGON ((
+    #127.08 37.53,
+    #127.08 37.54,      
+    #127.07 37.54,
+    #127.07 37.53,
+    #127.08 37.53))
+
+
+
+
+
+
+
+################## 지도 위에 시설물 점 찍는 함수 ################
+#시설물 데이터 불러오기 
+facility_data = pd.read_csv(facility_path, encoding= 'utf-8-sig')
+#print(facility_data.head())
+'''
+  시설명  시설유형                          주소        위도         경도
+0  CCTV  CCTV    서울특별시 광진구 광장로3길 22 (광장동)  37.54850  127.10300
+1  CCTV  CCTV    서울특별시 광진구 아차산로 540 (광장동)  37.54244  127.10147
+2  CCTV  CCTV  서울특별시 광진구 아차산로78길 53 (광장동)  37.55144  127.10983
+3  CCTV  CCTV    서울특별시 광진구 아차산로 636 (광장동)  37.54891  127.10899
+4  CCTV  CCTV    서울특별시 광진구 천호대로 809 (광장동)  37.54587  127.10359
+'''
+
+
+
+def add_facility_circle_markers(map, facility_data):
+    
+    #시설물 점 색깔 딕셔너리
+    facility_color_dict = {
+        'CCTV': 'green',
+        '가로등': 'orange',
+        '비상벨': 'red',
+        '경찰서': 'navy',
+        '파출소': 'blue',
+        '지구대': 'deepskyblue'
+    }
+
+    
+    #데이터프레임 한 행씩 돌면서.....
+    #facility_data.iterrows()는 데이터프레임을 한 행씩 꺼내는 기능
+    for _, facility in facility_data.iterrows(): #*행번호는 받아오지 않음
+        #해당 시설의 위도,경도 정보 받아오기
+        lat = facility['위도']
+        lng = facility['경도']
+
+        #시설물 종류 확인 
+        facility_type = facility['시설유형']
+
+        #시설물 표시색깔 가져오기(딕셔너리에 없는 시설유형이면 회색 사용)
+        marker_color = facility_color_dict.get(
+            facility_type,
+            'gray'
+        )
+
+        #지도 위에 점 찍기
+        folium.CircleMarker(
+            location = [lat, lng],
+            radius = 2, #점의 크기 
+            color = marker_color, #점 테두리 색갈
+            weight = 1, #점 테두리 두께
+            fill = True, #점 내부 채우기
+            fill_color = marker_color,
+            fill_opacity = 0.8, #점 내부 투명도
+            tooltip = facility_type #마우스를 올렸을때 시설유형 표시 
+        ).add_to(map)
+
+    return map
+
+
+#preview_map = add_facility_circle_markers(preview_map, facility_data)
+#preview_map.show_in_browser()
+
+
+
+
+
+###
+##
+###
+###
+###
+################## 격자 cell을 안전등급 색깔로 채워서 지도에 표시하는 함수 ##################
+# + 
+def add_grid_cells_with_safety_color(map, result_df, gwangjin_polygon_4326):
+
+    for _, row in result_df.iterrows(): #결과물 dataframe한 행씩 순회하며........
+
+        # 결과 dataframe에 저장된 중심 위경도로 cell_polygon 다시 생성
+        cell_polygon = make_cell_polygon(
+            row['중심위도'],
+            row['중심경도']
+        )
+
+        # 광진구 경계 밖으로 나가는 부분은 잘라내기(intersection)
+        #intersection() = 두 도형이 겹치는 부분만 잘라서 새로운 도형으로 반환하는 함수// 도형A.intersection(도형B) 
+        clipped_polygon = cell_polygon.intersection(gwangjin_polygon_4326)
+
+        # 겹치는 부분이 아예 없으면 (혹시 모를 예외) 건너뛰기
+        if clipped_polygon.is_empty:
+            continue
+
+        # 마우스 올렸을 때 보여줄 텍스트
+        tooltip_text = f"등급 {row['안전등급']} (점수: {row['안전점수']:.1f})"
+
+        # 클릭했을 때 보여줄 상세 정보
+        popup_text = (
+            f"<b>격자 {row['격자번호']}번</b><br>"
+            f"안전등급: {row['안전등급']}<br>"
+            f"안전점수: {row['안전점수']:.1f}점<br>"
+            f"CCTV: {row['CCTV개수']}개<br>"
+            f"가로등: {row['가로등개수']}개<br>"
+            f"비상벨: {row['비상벨개수']}개<br>"
+            f"경찰서: {row['경찰서개수']}개<br>"
+            f"파출소: {row['파출소개수']}개<br>"
+            f"지구대: {row['지구대개수']}개"
+        )
+
+        # 클로저 문제 방지: 반복문 안에서 lambda를 쓸 때
+        # 기본 인자(color=...)로 현재 row의 색을 고정시켜줘야
+        # 모든 cell이 마지막 색으로 통일되는 버그를 막을 수 있음
+        folium.GeoJson(
+            data=mapping(clipped_polygon),
+            style_function=lambda _, color=row['등급색상']: {
+                'fillColor': color,
+                'color': 'gray',      # cell 테두리 색
+                'weight': 0.5,
+                'fillOpacity': 0.5
+            },
+            tooltip=tooltip_text,
+            popup=folium.Popup(popup_text, max_width=250)
+        ).add_to(map)
+
+    return map
+
+
+
+
+
+
+
+
+
+
+##################### 하나의 cell_polygon의 시설 카운트 딕셔너리 함수 #####################
+
+#해당 구역 안에 포함되는 시설물들만 세기
+def counting_facility(cell_polygon, facility_data):
+    #시설유형별 개수를 저장할 딕셔너리
+    facility_count_dict={
+        'CCTV': 0,
+        '가로등':0, 
+        '비상벨': 0,
+        '경찰서': 0,
+        '파출소': 0,
+        '지구대': 0
+    }
+
+    #해당 구역 네 모서리
+    min_lng, min_lat, max_lng, max_lat = cell_polygon.bounds
+
+    #시설물 데이터를 한 행씩 확인
+    for _, facility in facility_data.iterrows(): #type(facility) = 시리즈
+        
+        #해당 시설의 종류 확인 
+        facility_type = facility['시설유형']
+
+        #해당 시설의 위치 확인
+        lat = facility['위도']
+        lng = facility['경도']
+
+        #해당 시설의 위도, 경도가 cell_polygon안에 포함되는지 확인
+        is_inside_lat = min_lat <= lat <= max_lat
+        is_inside_lng = min_lng <= lng <= max_lng
+
+        if is_inside_lat and is_inside_lng:#만약 시설이 네 모서리 안에 존재한다면...
+            #해당 시설 유형 딕셔너리 count value값 1증가
+            if facility_type in facility_count_dict:
+                facility_count_dict[facility_type] += 1
+    
+    #해당 격자 cell기준, 모든 시설에 대한 검사를 마친 후 
+    return facility_count_dict #시설 카운트 딕셔너리 반환
+
+
+
+
+
+
+
+
+
+##################### 하나의 cell_polygon의 안전점수 계산하기 #####################
+
+#안전점수 가중치 딕셔너리(임시 가중치)
+#시설별 가중치의 합은 100
 safety_weight_dict = {
-    "CCTV": 35,
-    "가로등": 30,
-    "비상벨": 20,
-    "경찰서": 15
+    "CCTV": 30,
+    "가로등": 20,
+    "비상벨": 5,
+    "경찰서": 15,
+    "파출소": 15, 
+    "지구대": 15
 }
 
-# 시설유형별 만점 기준 개수
+
+# 시설별 만점 기준 개수
 max_count_dict = {
-    "CCTV": 50,
-    "가로등": 100,
-    "비상벨": 20,
-    "경찰서": 2
+    "CCTV": 20,
+    "가로등":80,
+    "비상벨": 10,
+    "경찰서": 1,
+    "파출소": 1,
+    "지구대": 1
 }
 
-# 등급별 색깔
+#cell_polygon(네모칸 하나)의 안전점수 계산하기
+def calculate_safety_score_cell( facility_count_dict):
+
+    #안전점수 가중치 딕셔너리를 이용하여 해당 cell의 안점점수 계산하기
+    safety_score  = 0 #초기화
+
+    
+    #ratio구하기(만점이상일 경우 1로 계산)
+    CCTV_ratio = min(facility_count_dict['CCTV']/max_count_dict['CCTV'], 1)
+    bell_ratio = min(facility_count_dict['비상벨']/max_count_dict['비상벨'], 1)
+    police_station_ratio = min(facility_count_dict['경찰서']/max_count_dict['경찰서'],1)
+    police_box_ratio = min(facility_count_dict['파출소']/max_count_dict['파출소'], 1)
+    police_substation_ratio= min(facility_count_dict['지구대']/max_count_dict['지구대'], 1)
+    light_ratio = min(facility_count_dict['가로등']/max_count_dict['가로등'], 1)
+
+   
+   #안점점수구허가
+    safety_score =( safety_weight_dict['CCTV']*CCTV_ratio + safety_weight_dict['비상벨']*bell_ratio +
+                   safety_weight_dict['경찰서'] * police_station_ratio + safety_weight_dict['가로등']*light_ratio+
+                   safety_weight_dict['파출소'] * police_box_ratio + safety_weight_dict['지구대'] * police_substation_ratio)
+    
+
+    #해당 격자 안전점수 반환
+    return safety_score
+
+
+ 
+
+
+
+
+################### 하나의 cell_polygon의 grade지정 함수 ########################
+
+def define_grade(safety_score):
+    if safety_score >= 80:
+        return 'A' 
+    elif safety_score >= 60:
+        return 'B'  
+    elif safety_score >=40:
+        return 'C'  
+    elif safety_score >= 20:
+        return 'D'
+    else:
+        return 'E'
+
+
+
+
+
+
+#################### 모든 격자점에 대해서 안점점수 계산하기+ grade지정 + 색깔 지정##################
+# 안전등급별 색깔
 grade_color_dict = {
     "A": "green",
     "B": "yellowgreen",
@@ -90,1014 +755,145 @@ grade_color_dict = {
     "E": "red"
 }
 
-# 시설유형별 색깔
-facility_color_dict = {
-    "CCTV": "blue",
-    "가로등": "orange",
-    "비상벨": "red",
-    "경찰서": "purple"
-}
 
 
-# =========================================================
-# 2. 시작 전 파일 확인
-# =========================================================
-
-print("프로젝트 루트:", BASE_DIR)
-
-print("\n시설물 파일 경로:", facility_path)
-print("시설물 파일 존재 여부:", facility_path.exists())
-
-print("\n경계 폴더 경로:", boundary_dir)
-print("경계 폴더 존재 여부:", boundary_dir.exists())
-
-if not facility_path.exists():
-    raise FileNotFoundError(
-        f"시설물 파일을 찾지 못했습니다: {facility_path}"
-    )
-
-if not boundary_dir.exists():
-    raise FileNotFoundError(
-        f"경계 폴더를 찾지 못했습니다: {boundary_dir}"
-    )
-
-# boundary_dir 안의 shp 파일 자동 찾기
-shp_files = list(boundary_dir.glob("*.shp"))
-
-print("\n찾은 SHP 파일:")
-for file in shp_files:
-    print("-", file.name)
-
-if len(shp_files) == 0:
-    raise FileNotFoundError(
-        "data/raw/boundary/lgldong 폴더 안에 .shp 파일이 없습니다."
-    )
-
-boundary_path = shp_files[0]
-
-print("\n사용할 경계 파일:", boundary_path)
-
-
-# =========================================================
-# 3. SHP 파일 읽기 함수
-# =========================================================
-
-def read_shp_file(shp_path):
-    """
-    SHP 파일을 읽는 함수.
-    한글 인코딩 문제를 줄이기 위해 여러 인코딩을 순서대로 시도함.
-    """
-
-    encoding_list = ["cp949", "euc-kr", "utf-8", None]
-
-    last_error = None
-
-    for enc in encoding_list:
-        try:
-            if enc is None:
-                gdf = gpd.read_file(shp_path)
-            else:
-                gdf = gpd.read_file(shp_path, encoding=enc)
-
-            print(f"\nSHP 읽기 성공 - encoding: {enc}")
-            return gdf
-
-        except Exception as e:
-            last_error = e
-            print(f"SHP 읽기 실패 - encoding: {enc}")
-
-    raise last_error
-
-
-# =========================================================
-# 4. 광진구 경계 만들기
-# =========================================================
-
-def load_gwangjin_boundary(boundary_path):
-    """
-    법정동 경계 SHP에서 광진구에 해당하는 동만 골라
-    하나의 광진구 경계 polygon으로 합치는 함수.
-
-    광진구 법정동 코드는 보통 11215로 시작함.
-    """
-
-    boundary = read_shp_file(boundary_path)
-
-    print("\n경계 파일 컬럼 목록:")
-    print(boundary.columns)
-
-    print("\n경계 파일 앞부분:")
-    print(boundary.head())
-
-    print("\n원본 CRS:", boundary.crs)
-
-    # CRS가 없으면 좌표값 범위를 보고 추정
-    if boundary.crs is None:
-        minx, miny, maxx, maxy = boundary.total_bounds
-
-        # 좌표가 경도/위도처럼 보이면 EPSG:4326
-        if 120 <= minx <= 140 and 30 <= miny <= 45:
-            boundary = boundary.set_crs(epsg=4326)
-            print("CRS가 없어 EPSG:4326으로 설정했습니다.")
-        else:
-            # 행정구역 SHP는 보통 미터 단위 좌표계라서 EPSG:5179로 가정
-            boundary = boundary.set_crs(epsg=5179)
-            print("CRS가 없어 EPSG:5179로 설정했습니다.")
-
-    # 거리, 면적 계산용 미터 좌표계로 변환
-    boundary = boundary.to_crs(epsg=5179)
-
-    # geometry 깨짐 방지
-    boundary["geometry"] = boundary["geometry"].buffer(0)
-
-    gwangjin = None
-
-    # 코드 컬럼 후보
-    code_cols = [
-        "adm_cd",
-        "ADM_CD",
-        "bjd_cd",
-        "BJD_CD",
-        "법정동코드",
-        "법정동코",
-        "EMD_CD",
-        "emd_cd",
-        "CODE",
-        "code"
-    ]
-
-    # 이름 컬럼 후보
-    name_cols = [
-        "adm_nm",
-        "ADM_NM",
-        "bjd_nm",
-        "BJD_NM",
-        "법정동명",
-        "행정구역명",
-        "EMD_NM",
-        "emd_nm",
-        "name",
-        "NAME"
-    ]
-
-    # 1순위: 코드 컬럼에서 11215로 시작하는 값 찾기
-    for col in code_cols:
-        if col in boundary.columns:
-            temp = boundary[
-                boundary[col].astype(str).str.startswith("11215")
-            ]
-
-            if len(temp) > 0:
-                gwangjin = temp.copy()
-                print("\n광진구 필터링 기준 컬럼:", col)
-                print("선택된 행 개수:", len(gwangjin))
-                break
-
-    # 2순위: 이름 컬럼에서 광진구 포함 값 찾기
-    if gwangjin is None:
-        for col in name_cols:
-            if col in boundary.columns:
-                temp = boundary[
-                    boundary[col].astype(str).str.contains("광진구", na=False)
-                ]
-
-                if len(temp) > 0:
-                    gwangjin = temp.copy()
-                    print("\n광진구 필터링 기준 컬럼:", col)
-                    print("선택된 행 개수:", len(gwangjin))
-                    break
-
-    # 3순위: 모든 문자형 컬럼에서 광진구 포함 값 찾기
-    if gwangjin is None:
-        for col in boundary.columns:
-            if col == "geometry":
-                continue
-
-            temp = boundary[
-                boundary[col].astype(str).str.contains("광진구", na=False)
-            ]
-
-            if len(temp) > 0:
-                gwangjin = temp.copy()
-                print("\n광진구 필터링 기준 컬럼:", col)
-                print("선택된 행 개수:", len(gwangjin))
-                break
-
-    if gwangjin is None or len(gwangjin) == 0:
-        raise ValueError(
-            "광진구 행을 찾지 못했습니다. "
-            "터미널에 출력된 컬럼 목록과 앞부분 데이터를 확인해야 합니다."
-        )
-
-    print("\n광진구로 선택된 데이터 일부:")
-    print(gwangjin.head())
-
-    # geometry 재보정
-    gwangjin["geometry"] = gwangjin["geometry"].buffer(0)
-
-    # 광진구 동 polygon들을 하나로 합치기
-    gwangjin_boundary = gwangjin.dissolve()
-
-    # dissolve 후에도 geometry 보정
-    gwangjin_boundary["geometry"] = gwangjin_boundary["geometry"].buffer(0)
-
-    print("\n광진구 경계 생성 완료")
-    print("광진구 경계 개수:", len(gwangjin_boundary))
-    print("광진구 경계 CRS:", gwangjin_boundary.crs)
-
-    return gwangjin_boundary
-
-
-boundary_gdf = load_gwangjin_boundary(boundary_path)
-boundary_poly = boundary_gdf.geometry.iloc[0]
-
-print("\n광진구 경계 불러오기 완료")
-print("경계 bounds:", boundary_poly.bounds)
-
-
-# =========================================================
-# 5. 시설물 데이터 불러오기
-# =========================================================
-
-facilities = pd.read_csv(facility_path, encoding="utf-8-sig")
-
-print("\n시설물 데이터 컬럼:")
-print(facilities.columns)
-
-required_cols = ["시설유형", "위도", "경도"]
-
-for col in required_cols:
-    if col not in facilities.columns:
-        raise ValueError(f"시설물 CSV에 '{col}' 컬럼이 없습니다.")
-
-# 위도/경도 숫자 변환
-facilities["위도"] = pd.to_numeric(facilities["위도"], errors="coerce")
-facilities["경도"] = pd.to_numeric(facilities["경도"], errors="coerce")
-
-# 위도/경도 없는 행 제거
-facilities = facilities.dropna(subset=["위도", "경도"]).copy()
-
-# 시설유형 공백 제거
-facilities["시설유형"] = facilities["시설유형"].astype(str).str.strip()
-
-# 시설물 고유 ID 생성
-# 경계선 위 시설이 두 격자에 걸릴 때 중복 계산 방지용
-facilities = facilities.reset_index(drop=True)
-facilities["facility_id"] = facilities.index + 1
-
-print("\n시설물 데이터 개수:", len(facilities))
-print("시설유형 목록:")
-print(facilities["시설유형"].value_counts())
-
-# GeoDataFrame으로 변환
-# CSV는 위도/경도이므로 EPSG:4326
-facilities_gdf = gpd.GeoDataFrame(
-    facilities,
-    geometry=gpd.points_from_xy(facilities["경도"], facilities["위도"]),
-    crs="EPSG:4326"
-)
-
-# 미터 좌표계로 변환
-facilities_gdf = facilities_gdf.to_crs(epsg=5179)
-
-
-# =========================================================
-# 6. 시설물이 광진구 경계 안에 있는지 검사
-# =========================================================
-
-facilities_gdf["inside_gwangjin"] = facilities_gdf.geometry.within(boundary_poly)
-
-# 경계 근처 오차 허용
-boundary_with_tolerance = boundary_poly.buffer(facility_boundary_tolerance_m)
-
-facilities_gdf["inside_or_near_gwangjin"] = facilities_gdf.geometry.within(
-    boundary_with_tolerance
-)
-
-outside_facilities = facilities_gdf[
-    facilities_gdf["inside_or_near_gwangjin"] == False
-].copy()
-
-inside_or_near_count = int(facilities_gdf["inside_or_near_gwangjin"].sum())
-
-print("\n광진구 경계 안 또는 근처 시설 수:", inside_or_near_count)
-print("경계 밖으로 의심되는 시설 수:", len(outside_facilities))
-
-if inside_or_near_count == 0:
-    raise ValueError(
-        "광진구 경계 안 또는 근처로 판정된 시설물이 0개입니다. "
-        "경계 SHP의 CRS 또는 광진구 필터링이 잘못되었을 수 있습니다."
-    )
-
-# 경계 밖 의심 시설 저장
-if len(outside_facilities) > 0:
-    outside_facilities_4326 = outside_facilities.to_crs(epsg=4326).copy()
-
-    outside_facilities_4326["위도_변환확인"] = outside_facilities_4326.geometry.y
-    outside_facilities_4326["경도_변환확인"] = outside_facilities_4326.geometry.x
-
-    outside_output_path = processed_dir / "outside_suspicious_facilities.csv"
-
-    outside_facilities_4326.drop(columns="geometry").to_csv(
-        outside_output_path,
-        index=False,
-        encoding="utf-8-sig"
-    )
-
-    print("경계 밖 의심 시설 CSV 저장 완료:", outside_output_path)
-
-# 지도 표시용으로는 경계 안 또는 근처 시설을 사용
-# 실제 점수 계산은 뒤에서 격자 polygon과 만나는 시설만 카운트됨
-facilities_for_score = facilities_gdf[
-    facilities_gdf["inside_or_near_gwangjin"] == True
-].copy()
-
-
-# =========================================================
-# 7. polygon 형태만 남기는 함수
-# =========================================================
-# intersection 결과가 아주 드물게 GeometryCollection, LineString, Point가 될 수 있음.
-# 지도에 색칠 가능한 것은 Polygon 또는 MultiPolygon임.
-# 자투리 polygon은 제거하지 않음.
-# 단, 면적이 0인 선/점은 색칠할 면적 자체가 없으므로 제외함.
-# =========================================================
-
-def keep_polygon_part(geom):
-    """
-    Polygon 또는 MultiPolygon만 반환.
-    GeometryCollection 안에 polygon이 섞여 있으면 polygon 부분만 합쳐서 반환.
-    선/점만 있으면 빈 Polygon 반환.
-    """
-
-    if geom.is_empty:
-        return Polygon()
-
-    if geom.geom_type in ["Polygon", "MultiPolygon"]:
-        return geom
-
-    if geom.geom_type == "GeometryCollection":
-        polygon_parts = []
-
-        for part in geom.geoms:
-            if part.geom_type in ["Polygon", "MultiPolygon"]:
-                polygon_parts.append(part)
-
-        if len(polygon_parts) == 0:
-            return Polygon()
-
-        return unary_union(polygon_parts)
-
-    return Polygon()
-
-
-# =========================================================
-# 8. 광진구 500m 격자 polygon 만들기
-# =========================================================
-
-minx, miny, maxx, maxy = boundary_poly.bounds
-
-grid_cells = []
-grid_id = 0
-
-x_list = np.arange(minx, maxx, cell_size_m)
-y_list = np.arange(miny, maxy, cell_size_m)
-
-for x in x_list:
-    for y in y_list:
-
-        # 원래 500m x 500m 사각형
-        raw_cell = box(
-            x,
-            y,
-            x + cell_size_m,
-            y + cell_size_m
-        )
-
-        # 광진구 경계와 겹치는 부분만 남기기
-        clipped_cell = raw_cell.intersection(boundary_poly)
-
-        # polygon 부분만 남기기
-        clipped_cell = keep_polygon_part(clipped_cell)
-
-        # 광진구와 아예 안 겹치면 제외
-        if clipped_cell.is_empty:
-            continue
-
-        # 면적이 0이면 선/점이라서 지도에 색칠할 수 없음
-        # 자투리 polygon은 제거하지 않음
-        cell_area_m2 = clipped_cell.area
-
-        if cell_area_m2 <= 0:
-            continue
-
-        # 전체 500m x 500m 격자 대비 실제 면적 비율
-        area_ratio = cell_area_m2 / full_cell_area_m2
-
-        # 계산 오차로 1보다 살짝 커지는 경우 방지
-        area_ratio = min(area_ratio, 1)
-
-        grid_id += 1
-        this_grid_id = f"G{grid_id:04d}"
-
-        grid_cells.append({
-            "grid_id": this_grid_id,
-            "cell_area_m2": cell_area_m2,
-            "full_cell_area_m2": full_cell_area_m2,
-            "area_ratio": area_ratio,
-            "is_boundary_cell": area_ratio < 0.999,
-            "geometry": clipped_cell
-        })
-
-
-grid_cells_gdf = gpd.GeoDataFrame(
-    grid_cells,
-    geometry="geometry",
-    crs="EPSG:5179"
-)
-
-print("\n생성된 격자 cell 개수:", len(grid_cells_gdf))
-
-if len(grid_cells_gdf) == 0:
-    raise ValueError(
-        "생성된 격자가 0개입니다. 광진구 경계 polygon 또는 cell_size_m을 확인해야 합니다."
-    )
-
-print("\n격자 면적 비율 요약:")
-print(grid_cells_gdf["area_ratio"].describe())
-
-print("\n경계 때문에 잘린 격자 수:")
-print(grid_cells_gdf["is_boundary_cell"].value_counts())
-
-
-# =========================================================
-# 9. 격자 대표점 CSV 저장
-# =========================================================
-# 주의:
-# 이 대표점은 계산용이 아님.
-# 지도에서 격자 위치를 확인하거나 CSV에 위도/경도를 저장하기 위한 용도임.
-# 실제 시설 개수 계산은 아래 10번에서 격자 polygon 기준으로 진행함.
-# =========================================================
-
-grid_points_gdf = grid_cells_gdf.copy()
-grid_points_gdf["geometry"] = grid_points_gdf.geometry.representative_point()
-
-grid_points_4326 = grid_points_gdf.to_crs(epsg=4326).copy()
-
-grid_points_csv = pd.DataFrame({
-    "grid_id": grid_points_4326["grid_id"],
-    "위도": grid_points_4326.geometry.y,
-    "경도": grid_points_4326.geometry.x,
-    "cell_area_m2": grid_points_4326["cell_area_m2"].round(2),
-    "full_cell_area_m2": grid_points_4326["full_cell_area_m2"],
-    "area_ratio": grid_points_4326["area_ratio"].round(6),
-    "is_boundary_cell": grid_points_4326["is_boundary_cell"]
-})
-
-grid_points_output_path = processed_dir / "gwangjin_grid_points_area_corrected_no_drop.csv"
-
-grid_points_csv.to_csv(
-    grid_points_output_path,
-    index=False,
-    encoding="utf-8-sig"
-)
-
-print("격자 대표점 CSV 저장 완료:", grid_points_output_path)
-
-
-# =========================================================
-# 10. 격자 polygon 안 시설 개수 세기
-# =========================================================
-# 핵심:
-# - 실제 지도에 색칠되는 polygon 안 시설만 센다.
-# - predicate="intersects" 사용.
-# - 시설 점이 격자 경계선 위에 딱 걸친 경우도 포함하기 위해서.
-# - 단, 같은 시설이 여러 격자에 잡히면 facility_id 기준으로 하나만 남김.
-# =========================================================
-
-joined_raw = gpd.sjoin(
-    facilities_for_score[["facility_id", "시설유형", "geometry"]],
-    grid_cells_gdf[["grid_id", "geometry"]],
-    how="inner",
-    predicate="intersects"
-)
-
-print("\n격자 polygon과 매칭된 시설 수 - 중복 제거 전:", len(joined_raw))
-
-# 경계선 위 시설이 여러 격자와 매칭될 경우 중복 제거
-# 같은 시설이 여러 격자에 잡히면 grid_id가 빠른 격자 하나에만 배정
-joined = (
-    joined_raw
-    .sort_values(["facility_id", "grid_id"])
-    .drop_duplicates(subset=["facility_id"], keep="first")
-    .copy()
-)
-
-print("격자 polygon과 매칭된 시설 수 - 중복 제거 후:", len(joined))
-
-# 어떤 격자에 어떤 시설유형이 몇 개 들어갔는지 표로 만들기
-if len(joined) > 0:
-    count_table = (
-        joined
-        .groupby(["grid_id", "시설유형"])
-        .size()
-        .unstack(fill_value=0)
-        .reset_index()
-    )
-else:
-    count_table = pd.DataFrame({"grid_id": grid_cells_gdf["grid_id"]})
-
-# 필요한 시설유형 컬럼이 없으면 0으로 추가
-for facility_type in safety_weight_dict.keys():
-    if facility_type not in count_table.columns:
-        count_table[facility_type] = 0
-
-# 격자 polygon에 시설 개수 붙이기
-safety_grid = grid_cells_gdf.merge(
-    count_table,
-    on="grid_id",
-    how="left"
-)
-
-# NaN을 0으로 채우기
-for facility_type in safety_weight_dict.keys():
-    safety_grid[facility_type] = safety_grid[facility_type].fillna(0).astype(int)
-
-
-# =========================================================
-# 11. 경계 격자 면적 보정
-# =========================================================
-# 자투리 격자 제거 안 함.
-# 대신 잘린 격자는 면적비율로 시설 개수를 보정함.
-#
-# 보정개수 = 실제개수 / area_ratio
-#
-# 예:
-# area_ratio = 0.5
-# CCTV 실제개수 = 10
-# CCTV 보정개수 = 10 / 0.5 = 20
-# =========================================================
-
-for facility_type in safety_weight_dict.keys():
-    corrected_col = f"{facility_type}보정개수"
-
-    safety_grid[corrected_col] = np.where(
-        safety_grid["area_ratio"] > 0,
-        safety_grid[facility_type] / safety_grid["area_ratio"],
-        0
-    )
-
-
-# =========================================================
-# 12. 안전점수 / 안전등급 계산
-# =========================================================
-
-def calculate_safety_score(row):
-    """
-    한 격자 polygon 안에 들어있는 시설 개수를 이용해 안전점수 계산.
-    단, 광진구 경계 때문에 잘린 격자는 면적비율로 보정한 시설 개수를 사용함.
-    """
-
-    score = 0
-
-    for facility_type, weight in safety_weight_dict.items():
-
-        # 실제 개수가 아니라 면적 보정 개수 사용
-        corrected_count_col = f"{facility_type}보정개수"
-        count = row[corrected_count_col]
-
-        max_count = max_count_dict[facility_type]
-
-        ratio = count / max_count
-
-        # 만점 기준 이상이면 1로 고정
-        if ratio > 1:
-            ratio = 1
-
-        score += ratio * weight
-
-    return score
-
-
-def convert_score_to_grade(score):
-    """
-    안전점수를 A~E 등급으로 변환
-    """
-
-    if score >= 85:
-        return "A"
-    elif score >= 70:
-        return "B"
-    elif score >= 55:
-        return "C"
-    elif score >= 40:
-        return "D"
-    else:
-        return "E"
-
-
-safety_grid["안전점수"] = safety_grid.apply(calculate_safety_score, axis=1)
-safety_grid["안전등급"] = safety_grid["안전점수"].apply(convert_score_to_grade)
-
-# 실제 시설 개수
-safety_grid["CCTV개수"] = safety_grid["CCTV"]
-safety_grid["가로등개수"] = safety_grid["가로등"]
-safety_grid["비상벨개수"] = safety_grid["비상벨"]
-safety_grid["경찰서개수"] = safety_grid["경찰서"]
-
-safety_grid["전체시설개수"] = (
-    safety_grid["CCTV개수"]
-    + safety_grid["가로등개수"]
-    + safety_grid["비상벨개수"]
-    + safety_grid["경찰서개수"]
-)
-
-# 면적 보정 시설 개수
-safety_grid["전체시설보정개수"] = (
-    safety_grid["CCTV보정개수"]
-    + safety_grid["가로등보정개수"]
-    + safety_grid["비상벨보정개수"]
-    + safety_grid["경찰서보정개수"]
-)
-
-print("\n안전등급 분포:")
-print(safety_grid["안전등급"].value_counts().sort_index())
-
-print("\n안전점수 요약:")
-print(safety_grid["안전점수"].describe())
-
-
-# =========================================================
-# 13. 안전점수 CSV 저장
-# =========================================================
-
-safety_grid_points = safety_grid.copy()
-safety_grid_points["geometry"] = safety_grid_points.geometry.representative_point()
-safety_grid_points_4326 = safety_grid_points.to_crs(epsg=4326).copy()
-
-safety_csv = pd.DataFrame({
-    "grid_id": safety_grid_points_4326["grid_id"],
-    "대표점_위도": safety_grid_points_4326.geometry.y,
-    "대표점_경도": safety_grid_points_4326.geometry.x,
-
-    "cell_size_m": cell_size_m,
-    "cell_area_m2": safety_grid_points_4326["cell_area_m2"].round(2),
-    "full_cell_area_m2": safety_grid_points_4326["full_cell_area_m2"],
-    "area_ratio": safety_grid_points_4326["area_ratio"].round(6),
-    "is_boundary_cell": safety_grid_points_4326["is_boundary_cell"],
-
-    "계산방식": "격자 polygon 안 실제 시설 개수 + 경계 격자 면적 보정 + 자투리 격자 제거 없음",
-
-    "CCTV개수": safety_grid_points_4326["CCTV개수"],
-    "가로등개수": safety_grid_points_4326["가로등개수"],
-    "비상벨개수": safety_grid_points_4326["비상벨개수"],
-    "경찰서개수": safety_grid_points_4326["경찰서개수"],
-    "전체시설개수": safety_grid_points_4326["전체시설개수"],
-
-    "CCTV보정개수": safety_grid_points_4326["CCTV보정개수"].round(2),
-    "가로등보정개수": safety_grid_points_4326["가로등보정개수"].round(2),
-    "비상벨보정개수": safety_grid_points_4326["비상벨보정개수"].round(2),
-    "경찰서보정개수": safety_grid_points_4326["경찰서보정개수"].round(2),
-    "전체시설보정개수": safety_grid_points_4326["전체시설보정개수"].round(2),
-
-    "안전점수": safety_grid_points_4326["안전점수"].round(2),
-    "안전등급": safety_grid_points_4326["안전등급"]
-})
-
-safety_output_path = processed_dir / "safety_grid_area_corrected_no_drop.csv"
-
-safety_csv.to_csv(
-    safety_output_path,
-    index=False,
-    encoding="utf-8-sig"
-)
-
-print("안전점수 CSV 저장 완료:", safety_output_path)
-
-
-# =========================================================
-# 14. 안전등급 격자 GeoJSON 저장
-# =========================================================
-
-safety_grid_4326 = safety_grid.to_crs(epsg=4326).copy()
-
-# GeoJSON에 들어갈 숫자 컬럼 반올림
-round_cols = [
-    "cell_area_m2",
-    "area_ratio",
-    "안전점수",
-    "CCTV보정개수",
-    "가로등보정개수",
-    "비상벨보정개수",
-    "경찰서보정개수",
-    "전체시설보정개수"
+# #################### 모든 격자점 안전점수 계산 ####################
+# dataframe에 해당 격자점 정보 저장
+result_columns = [
+    '격자번호', '중심위도', '중심경도',
+    '격자한변길이_m', '격자전체면적_m2',
+    'CCTV개수','가로등개수', '비상벨개수','경찰서개수','지구대개수','파출소개수','전체시설개수',
+    '안전점수', '안전등급', '등급색상'
 ]
-
-for col in round_cols:
-    if col in safety_grid_4326.columns:
-        safety_grid_4326[col] = safety_grid_4326[col].round(6)
-
-grid_geojson_output_path = processed_dir / "gwangjin_safety_grid_cells_area_corrected_no_drop.geojson"
-
-safety_grid_4326.to_file(
-    grid_geojson_output_path,
-    driver="GeoJSON"
-)
-
-print("안전등급 격자 GeoJSON 저장 완료:", grid_geojson_output_path)
+result_df = pd.DataFrame(columns= result_columns)
+# 각 격자의 결과를 저장할 리스트(격자마다의 결과 딕셔너리를 넣을거임)
+result_rows = []
 
 
-# =========================================================
-# 15. 시설-격자 매칭 결과 CSV 저장
-# =========================================================
-# 어떤 시설이 어떤 격자에 들어갔는지 확인할 때 사용
-# =========================================================
 
-if len(joined) > 0:
-    joined_for_save = joined.merge(
-        facilities_gdf.drop(columns="geometry"),
-        on=["facility_id", "시설유형"],
-        how="left"
+
+#필요한 변수 선언
+gwangjin_polygon_4326 = gwangjin_boundary_4326_gdf.geometry.iloc[0]
+total_point_count = len(point_list)
+
+
+#격자점 리스트 순회
+#enumerate(): 각 값앞에 번호를 붙여줌(ex: point_number)
+for point_number, (point_lat, point_lng) in enumerate(
+    point_list,
+    start=1 #번호를 0번 부터가 아닌 1번부터 붙이기!
+):
+    # 현재 진행 상황 출력
+    print(
+        f'\r격자 계산 중: {point_number}/{total_point_count} '
+        f'({point_number / total_point_count * 100:.1f}%)',
+        end='',
+        flush=True
     )
 
-    facility_grid_match_output_path = processed_dir / "facility_grid_match_area_corrected_no_drop.csv"
+    # 해당 격자점을 기준으로 하는 cell_polygon 생성
+    cell_polygon = make_cell_polygon(
+        point_lat,
+        point_lng
+    )
+    #만약 해당 cell이 광진구와 전혀 겹치지 않는다면 제외
+    
+    #intersects:
+    if not cell_polygon.intersects(
+        gwangjin_polygon_4326
+    ):
+        continue #다음 cell계산
 
-    joined_for_save.drop(columns=["index_right"], errors="ignore").to_csv(
-        facility_grid_match_output_path,
-        index=False,
-        encoding="utf-8-sig"
+    #시설물 개수 세기
+    facility_count_dict = counting_facility(cell_polygon, facility_data)
+
+
+    # cell_polygon의 안전점수 계산
+    safety_score = calculate_safety_score_cell(
+        facility_count_dict
     )
 
-    print("시설-격자 매칭 CSV 저장 완료:", facility_grid_match_output_path)
+    # 안전등급
+    safety_grade = define_grade(
+        safety_score
+    )
 
+    # cell_polygon 색깔
+    safety_grade_color = grade_color_dict[
+        safety_grade
+    ]
 
-# =========================================================
-# 16. Folium 지도 만들기
-# =========================================================
-
-# 지도 중심점 계산
-center_point_5179 = boundary_poly.centroid
-
-center_point_4326 = gpd.GeoSeries(
-    [center_point_5179],
-    crs="EPSG:5179"
-).to_crs(epsg=4326).iloc[0]
-
-center_lat = center_point_4326.y
-center_lng = center_point_4326.x
-
-m = folium.Map(
-    location=[center_lat, center_lng],
-    zoom_start=14,
-    tiles="CartoDB Voyager"
-)
-
-
-# =========================================================
-# 17. 광진구 경계 표시
-# =========================================================
-
-boundary_4326 = boundary_gdf.to_crs(epsg=4326)
-
-folium.GeoJson(
-    data=json.loads(boundary_4326.to_json()),
-    name="광진구 경계",
-    style_function=lambda feature: {
-        "color": "black",
-        "weight": 3,
-        "fill": False
-    },
-    tooltip="광진구 경계"
-).add_to(m)
-
-
-# =========================================================
-# 18. 안전등급 격자 polygon 표시
-# =========================================================
-
-def style_grid_cell(feature):
-    grade = feature["properties"].get("안전등급", "E")
-    color = grade_color_dict.get(grade, "gray")
-
-    return {
-        "color": color,
-        "weight": 1,
-        "fillColor": color,
-        "fillOpacity": 0.45
+    #현재 격자의 결과를 딕셔너리 형태로 저장
+    cell_result_dict = {
+        '격자번호': point_number,
+        '중심위도': point_lat,
+        '중심경도': point_lng,
+        '격자한변길이_m': cell_size_m,
+        '격자전체면적_m2': cell_size_m ** 2,
+        'CCTV개수': facility_count_dict['CCTV'],
+        '가로등개수': facility_count_dict['가로등'],
+        '비상벨개수': facility_count_dict['비상벨'],
+        '경찰서개수': facility_count_dict['경찰서'],
+        '지구대개수': facility_count_dict['지구대'],
+        '파출소개수': facility_count_dict['파출소'],
+        '전체시설개수': sum(facility_count_dict.values()), #values(): 딕셔너리에서 값만 꺼내는 기능
+        '안전점수': safety_score,
+        '안전등급': safety_grade,
+        '등급색상': safety_grade_color
     }
 
-
-grid_geojson_data = json.loads(safety_grid_4326.to_json())
-
-folium.GeoJson(
-    data=grid_geojson_data,
-    name="안전등급 격자 - 면적 보정 / 자투리 제거 없음",
-    style_function=style_grid_cell,
-    tooltip=folium.GeoJsonTooltip(
-        fields=[
-            "grid_id",
-            "안전점수",
-            "안전등급",
-
-            "cell_area_m2",
-            "full_cell_area_m2",
-            "area_ratio",
-            "is_boundary_cell",
-
-            "CCTV개수",
-            "가로등개수",
-            "비상벨개수",
-            "경찰서개수",
-            "전체시설개수",
-
-            "CCTV보정개수",
-            "가로등보정개수",
-            "비상벨보정개수",
-            "경찰서보정개수",
-            "전체시설보정개수"
-        ],
-        aliases=[
-            "격자ID",
-            "안전점수",
-            "안전등급",
-
-            "실제 격자면적㎡",
-            "원래 격자면적㎡",
-            "면적비율",
-            "경계 잘림 여부",
-
-            "CCTV 실제",
-            "가로등 실제",
-            "비상벨 실제",
-            "경찰서 실제",
-            "전체시설 실제",
-
-            "CCTV 보정",
-            "가로등 보정",
-            "비상벨 보정",
-            "경찰서 보정",
-            "전체시설 보정"
-        ],
-        localize=True
+    # 결과 리스트에 현재 격자 정보 추가
+    result_rows.append(
+        cell_result_dict
     )
-).add_to(m)
 
 
-# =========================================================
-# 19. 격자 대표점 표시
-# =========================================================
+# 모든 격자의 계산이 끝난 뒤 DataFrame 생성
+result_df = pd.DataFrame(
+    result_rows,
+    columns=result_columns
+)
 
-grid_point_layer = folium.FeatureGroup(name="격자 대표점")
-
-for _, row in safety_csv.iterrows():
-    folium.CircleMarker(
-        location=[row["대표점_위도"], row["대표점_경도"]],
-        radius=2,
-        color="black",
-        fill=True,
-        fill_color="black",
-        fill_opacity=0.8,
-        tooltip=(
-            f"{row['grid_id']} / "
-            f"{row['안전등급']}등급 / "
-            f"{row['안전점수']:.1f}점 / "
-            f"면적비율 {row['area_ratio']}"
-        )
-    ).add_to(grid_point_layer)
-
-grid_point_layer.add_to(m)
+print('\n모든 격자 계산 완료')
 
 
-# =========================================================
-# 20. 시설물 표시
-# =========================================================
-
-facilities_for_map = facilities_for_score.to_crs(epsg=4326).copy()
-
-for facility_type in facilities_for_map["시설유형"].unique():
-
-    one_type = facilities_for_map[
-        facilities_for_map["시설유형"] == facility_type
-    ].copy()
-
-    facility_layer = folium.FeatureGroup(name=f"시설물 - {facility_type}")
-
-    marker_color = facility_color_dict.get(facility_type, "gray")
-
-    for _, row in one_type.iterrows():
-
-        lat = row.geometry.y
-        lng = row.geometry.x
-
-        popup_text = f"""
-        <b>시설유형:</b> {row.get('시설유형', '')}<br>
-        <b>시설명:</b> {row.get('시설명', '')}<br>
-        <b>주소:</b> {row.get('주소', '')}<br>
-        <b>위도:</b> {lat}<br>
-        <b>경도:</b> {lng}
-        """
-
-        folium.CircleMarker(
-            location=[lat, lng],
-            radius=3,
-            color=marker_color,
-            fill=True,
-            fill_color=marker_color,
-            fill_opacity=0.8,
-            popup=folium.Popup(popup_text, max_width=300),
-            tooltip=facility_type
-        ).add_to(facility_layer)
-
-    facility_layer.add_to(m)
 
 
-# =========================================================
-# 21. 경계 밖 의심 시설 표시
-# =========================================================
-
-if len(outside_facilities) > 0:
-
-    outside_map = outside_facilities.to_crs(epsg=4326).copy()
-    outside_layer = folium.FeatureGroup(name="경계 밖 의심 시설")
-
-    for _, row in outside_map.iterrows():
-
-        lat = row.geometry.y
-        lng = row.geometry.x
-
-        popup_text = f"""
-        <b>경계 밖 의심 시설</b><br>
-        <b>시설유형:</b> {row.get('시설유형', '')}<br>
-        <b>시설명:</b> {row.get('시설명', '')}<br>
-        <b>주소:</b> {row.get('주소', '')}<br>
-        <b>위도:</b> {lat}<br>
-        <b>경도:</b> {lng}
-        """
-
-        folium.CircleMarker(
-            location=[lat, lng],
-            radius=5,
-            color="black",
-            fill=True,
-            fill_color="white",
-            fill_opacity=1,
-            popup=folium.Popup(popup_text, max_width=300),
-            tooltip="경계 밖 의심 시설"
-        ).add_to(outside_layer)
-
-    outside_layer.add_to(m)
 
 
-# =========================================================
-# 22. 범례 추가
-# =========================================================
+#################### 지도 구현 ####################
+# 광진구 지도 만들기 (경계선 포함)
+gwangjin_map = make_gwangjing_map()
 
-legend_html = """
-<div style="
-    position: fixed;
-    bottom: 40px;
-    left: 40px;
-    width: 300px;
-    background-color: white;
-    border: 2px solid gray;
-    z-index: 9999;
-    font-size: 14px;
-    padding: 10px;
-">
-<b>안전등급 범례</b><br>
-<span style="color:green;">■</span> A 등급<br>
-<span style="color:yellowgreen;">■</span> B 등급<br>
-<span style="color:yellow;">■</span> C 등급<br>
-<span style="color:orange;">■</span> D 등급<br>
-<span style="color:red;">■</span> E 등급<br>
-<hr>
-<b>계산 기준</b><br>
-500m x 500m 격자 polygon 안 시설 개수<br>
-경계에 잘린 격자는 면적비율로 시설 개수 보정<br>
-보정개수 = 실제개수 / 면적비율<br>
-자투리 격자 제거 안 함<br>
-반경 원 계산 사용 안 함<br>
-<hr>
-<span style="color:black;">●</span> 격자 대표점<br>
-<span style="color:blue;">●</span> CCTV<br>
-<span style="color:orange;">●</span> 가로등<br>
-<span style="color:red;">●</span> 비상벨<br>
-<span style="color:purple;">●</span> 경찰서<br>
-<span style="color:black;">○</span> 경계 밖 의심 시설<br>
-</div>
-"""
+# 광진구 전체 polygon (경계 자르기 + intersects 판정용, EPSG:4326)
+gwangjin_polygon_4326 = gwangjin_boundary_4326_gdf.geometry.iloc[0]
 
-m.get_root().html.add_child(folium.Element(legend_html))
+# 격자 cell을 안전등급 색깔로 채우기 (맨 아래 레이어로 먼저 그리기)
+add_grid_cells_with_safety_color(gwangjin_map, result_df, gwangjin_polygon_4326)
+
+# 격자점 찍기
+add_grid_point_cross_markers(gwangjin_map)
+
+# 시설물 점 찍기
+add_facility_circle_markers(gwangjin_map, facility_data)
+
+gwangjin_map.show_in_browser()
 
 
-# =========================================================
-# 23. 레이어 컨트롤 + 지도 저장
-# =========================================================
 
-folium.LayerControl().add_to(m)
 
-map_output_path = output_dir / "gwangjin_safety_grid_map_area_corrected.html"
 
-m.save(map_output_path)
+############### 저장 ##########################
+gwangjin_map.save(output_dir/ 'gwangjin_safety_map.html')
+result_df.to_csv(processed_dir/ 'safety_score_result_csv.csv', index = False)
 
-print("\n지도 저장 완료:", map_output_path)
-print("완료!")
+########### 면적보정 vs 실제 데이터 더 수집하기... ####################
+##면적 보정 방법은 claude에 있음
+
+
+
+
+
+
+
+
