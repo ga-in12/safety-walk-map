@@ -1,8 +1,6 @@
 import pandas as pd
 
-# =========================
 # 1. CCTV
-# =========================
 cctv_seoul = pd.read_csv(
     "CCTV정보_서울특별시(추가본).csv",
     encoding="cp949"
@@ -15,9 +13,7 @@ cctv_guri = pd.read_csv(
 
 cctv = pd.concat([cctv_seoul, cctv_guri], ignore_index=True)
 
-# =========================
 # 2. 비상벨
-# =========================
 bell_seoul = pd.read_csv(
     "안전비상벨위치정보_서울특별시(추가본).csv",
     encoding="cp949"
@@ -30,24 +26,18 @@ bell_guri = pd.read_csv(
 
 bell = pd.concat([bell_seoul, bell_guri], ignore_index=True)
 
-# =========================
 # 3. 가로등
-# =========================
 lamp = pd.read_csv(
     "서울특별시_가로등_위치_정보__추가본_(UTF-8).csv"
 )
 
-# =========================
 # 4. 경찰서/파출소
-# =========================
 police = pd.read_csv(
     "장안1파출소(추가본).csv",
     skiprows=1
 )
 
-# =========================
 # 5. 저장
-# =========================
 cctv.to_csv("추가본_CCTV.csv", index=False, encoding="utf-8-sig")
 bell.to_csv("추가본_비상벨.csv", index=False, encoding="utf-8-sig")
 lamp.to_csv("추가본_가로등.csv", index=False, encoding="utf-8-sig")
@@ -66,10 +56,7 @@ print(lamp.columns.tolist())
 print("\n=== 경찰서/파출소 ===")
 print(police.columns.tolist())
 
-
-# =========================
-# 6. 최종 통합본 생성
-# =========================
+# 6. 통합본
 
 # CCTV
 cctv_final = pd.DataFrame({
@@ -113,10 +100,7 @@ final_df = pd.concat(
     ignore_index=True
 )
 
-
-# =========================
-# 광진구 포괄 범위 필터
-# =========================
+# 광진구 포괄 네모칸 범위
 
 MIN_LON = 127.05621791080974
 MAX_LON = 127.11522557604522
@@ -147,4 +131,4 @@ print(final_df.duplicated().sum())
 print(police_final)
 
 
-# 가로등 데이터 "주소": ""  비어있는 행들 주소 컬럼 결측
+# 가로등 데이터 "주소": ""  비어있는 행들 주소 컬럼 빈칸 데이터
