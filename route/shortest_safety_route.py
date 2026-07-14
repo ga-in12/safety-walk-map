@@ -2,15 +2,15 @@ import os
 import numpy as np
 import osmnx as ox
 import pandas as pd
-import matplotlib.pyplot as plt
+import folium
 from sklearn.neighbors import BallTree
 
-# 설정값 
+# 설정값
 place = "Gwangjin-gu, Seoul, South Korea"
 graph_path = "gwangjin.graphml"
 
 # 임시 CSV 파일사용, 추후 변경예정
-grid_path = "route/temp__safety_grid.csv"  
+grid_path = "route/temp__safety_grid.csv"
 
 # 현재 임시 테스트용 CSV 기준 컬럼명
 LAT_COL = "위도"
@@ -34,6 +34,14 @@ ALPHA_DEFAULT = 0.5
 
 # 안전경로 추천 임계값 (최단경로 대비 시간 증가율)
 TIME_INCREASE_THRESHOLD = 0.15
+
+# 지도 시각화에 사용할 타일
+# "CartoDB positron" : 깔끔하고 UI에 얹기 좋음
+# "OpenStreetMap"    : 지명/상호 등 정보량이 많음
+MAP_TILES = "CartoDB positron"
+
+# 결과 지도를 저장할 경로 (팀원 공유 / 발표용)
+MAP_OUTPUT_PATH = "route_map.html"
 
 
 # 그래프 다운로드 (없으면 다운로드, 있으면 재사용)
@@ -73,7 +81,7 @@ def load_safety_grid():
     return grid
 
 
-# 모든 노드에 안전점수 매핑 
+# 모든 노드에 안전점수 매핑
 def attach_safety_scores(G, grid):
     print("노드 안전점수 계산중...")
 
@@ -130,6 +138,7 @@ def summarize_route(G, route):
         "coords": coords,
     }
 
+
 # 출발/도착 좌표를 받아
 # 최단경로/안전경로를 모두 계산하고
 # 추천 경로까지 판단해서 반환
@@ -160,44 +169,72 @@ def find_route(G, orig_lat, orig_lon, dest_lat, dest_lon, alpha=ALPHA_DEFAULT):
     }
 
 
-## 시각화
-# 회색 : 전체 도로
-# 파랑 : 최단경로
-# 초록 : 안전경로
-def visualize(G, fast_route, safe_route):
-    fig, ax = ox.plot_graph(
-        G,
-        node_size=0,
-        edge_color="lightgray",
-        bgcolor="white",
-        show=False,
-        close=False,
+## 시각화 (Folium 기반 인터랙티브 지도)
+# 파랑 실선 : 최단경로
+# 초록 대시선 : 안전경로
+# -> 회색 도로망 이미지 대신 실제 지도 타일(도로/건물/지명) 위에 경로를 그려서
+#    훨씬 구체적으로 보이고, Streamlit에서 streamlit_folium.st_folium()으로
+#    그대로 렌더링할 수 있음
+def visualize(fast_route, safe_route, safety_grid=None):
+    fast_coords = fast_route["coords"]
+    safe_coords = safe_route["coords"]
+
+    start_lat, start_lon = fast_coords[0]
+    end_lat, end_lon = fast_coords[-1]
+
+    m = folium.Map(
+        location=[(start_lat + end_lat) / 2, (start_lon + end_lon) / 2],
+        zoom_start=15,
+        tiles=MAP_TILES,
+        control_scale=True,
     )
 
-    ox.plot_graph_route(
-        G,
-        fast_route,
-        ax=ax,
-        route_color="blue",
-        route_linewidth=4,
-        node_size=0,
-        show=False,
-        close=False,
-    )
+    # 최단 경로 (파란 실선)
+    folium.PolyLine(
+        fast_coords,
+        color="#1f77ff",
+        weight=5,
+        opacity=0.85,
+        tooltip=f"최단 경로: {fast_route['distance_m']:.0f}m / {fast_route['time_min']:.1f}분",
+    ).add_to(m)
 
-    ox.plot_graph_route(
-        G,
-        safe_route,
-        ax=ax,
-        route_color="green",
-        route_linewidth=4,
-        node_size=0,
-        show=False,
-        close=False,
-    )
+    # 안전 경로 (초록 대시선 - 최단경로와 겹쳐도 구분되도록)
+    folium.PolyLine(
+        safe_coords,
+        color="#2ca02c",
+        weight=5,
+        opacity=0.9,
+        dash_array="8,6",
+        tooltip=f"안전 경로: {safe_route['distance_m']:.0f}m / {safe_route['time_min']:.1f}분",
+    ).add_to(m)
 
-    plt.title("Blue : Shortest Route   Green : Safest Route")
-    plt.show()
+    # 출발/도착 마커
+    folium.Marker(
+        location=[start_lat, start_lon],
+        popup=folium.Popup("<b>출발지</b>", max_width=200),
+        icon=folium.Icon(color="black", icon="play", prefix="fa"),
+    ).add_to(m)
+
+    folium.Marker(
+        location=[end_lat, end_lon],
+        popup=folium.Popup("<b>도착지</b>", max_width=200),
+        icon=folium.Icon(color="red", icon="flag-checkered", prefix="fa"),
+    ).add_to(m)
+    
+
+    # 범례
+    legend_html = """
+    <div style="position: fixed; bottom: 30px; left: 30px; z-index:9999;
+                background-color: white; padding: 10px 14px; border-radius: 8px;
+                box-shadow: 0 1px 4px rgba(0,0,0,0.3); font-size: 13px;">
+        <b>범례</b><br>
+        <span style="color:#1f77ff;">━━</span> 최단 경로<br>
+        <span style="color:#2ca02c;">┅┅</span> 안전 경로
+    </div>
+    """
+    m.get_root().html.add_child(folium.Element(legend_html))
+
+    return m
 
 
 # 실행부
@@ -206,11 +243,16 @@ if __name__ == "__main__":
     grid = load_safety_grid()
     G = attach_safety_scores(G, grid)
 
-    orig_lat, orig_lon = 37.5404, 127.0700
-    dest_lat, dest_lon = 37.5485, 127.0815
+    print("출발지 좌표를 입력하세요 (예: 37.5404, 127.0700)")
+    orig_lat = float(input("출발지 위도: "))
+    orig_lon = float(input("출발지 경도: "))
+
+    print("\n도착지 좌표를 입력하세요 (예: 37.5485, 127.0815)")
+    dest_lat = float(input("도착지 위도: "))
+    dest_lon = float(input("도착지 경도: "))
 
     result = find_route(G, orig_lat, orig_lon, dest_lat, dest_lon, alpha=ALPHA_DEFAULT)
-
+    
     print()
     print("===== 최단경로 =====")
     print(f"총 거리 : {result['fast']['distance_m']:.0f} m")
@@ -225,4 +267,6 @@ if __name__ == "__main__":
     print(f"시간 증가율 : {result['time_increase_ratio']*100:.1f}%")
     print(f"추천 경로 : {result['recommended']}")
 
-    visualize(G, result["fast"]["nodes"], result["safe"]["nodes"])
+    route_map = visualize(result["fast"], result["safe"], safety_grid=grid)
+    route_map.save(MAP_OUTPUT_PATH)
+    print(f"\n지도 저장 완료: {MAP_OUTPUT_PATH} (브라우저로 열어서 확인)")
