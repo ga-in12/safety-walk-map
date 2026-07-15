@@ -27,6 +27,47 @@ print('\n[추가 데이터 시설유형]')
 print(add_facility['시설유형'].unique())
 
 
+#################### 필요한 칼럼 확인 ####################
+
+required_columns = [
+    '시설명',
+    '시설유형',
+    '주소',
+    '위도',
+    '경도'
+]
+
+
+for data_name, data in [
+    ('기존 광진구 데이터', gwangjin_facility),
+    ('추가 데이터', add_facility)
+]:
+
+    missing_columns = [
+        column
+        for column in required_columns
+        if column not in data.columns
+    ]
+
+    if missing_columns:
+
+        raise ValueError(
+            f'{data_name}에 필요한 칼럼이 없습니다: '
+            f'{missing_columns}'
+        )
+
+
+#################### 필요한 칼럼만 선택 ####################
+
+gwangjin_facility = gwangjin_facility[
+    required_columns
+].copy()
+
+add_facility = add_facility[
+    required_columns
+].copy()
+
+
 #################### 문자열 칼럼 정리 ####################
 
 text_columns = [
@@ -52,20 +93,40 @@ for data in [
 
 #################### 위도·경도를 숫자로 변환 ####################
 
+coordinate_columns = [
+    '위도',
+    '경도'
+]
+
+
 for data in [
     gwangjin_facility,
     add_facility
 ]:
 
-    for column in [
-        '위도',
-        '경도'
-    ]:
+    for column in coordinate_columns:
 
         data[column] = pd.to_numeric(
             data[column],
             errors='coerce'
         )
+
+
+#################### 좌표가 없는 행 제거 ####################
+
+gwangjin_facility = gwangjin_facility.dropna(
+    subset=[
+        '위도',
+        '경도'
+    ]
+).copy()
+
+add_facility = add_facility.dropna(
+    subset=[
+        '위도',
+        '경도'
+    ]
+).copy()
 
 
 #################### 추가 데이터 시설유형 통일 ####################
@@ -81,78 +142,21 @@ add_facility['시설유형'] = (
 
 print('\n[정리한 기존 광진구 시설유형별 개수]')
 print(
-    gwangjin_facility['시설유형'].value_counts(
+    gwangjin_facility[
+        '시설유형'
+    ].value_counts(
         dropna=False
     )
 )
 
 print('\n[정리한 추가 데이터 시설유형별 개수]')
 print(
-    add_facility['시설유형'].value_counts(
+    add_facility[
+        '시설유형'
+    ].value_counts(
         dropna=False
     )
 )
-
-
-#################### 구리시 경찰시설 수동 데이터 ####################
-
-manual_police_facility = pd.DataFrame({
-    '시설명': [
-        '구리경찰서 (본서)',
-        '교문지구대',
-        '토평지구대 (아천동 관할)'
-    ],
-
-    '시설유형': [
-        '경찰서',
-        '지구대',
-        '지구대'
-    ],
-
-    '주소': [
-        '경기도 구리시 아차산로 359',
-        '경기도 구리시 안골로 40',
-        '경기도 구리시 체육관로74번길 55'
-    ],
-
-    '위도': [
-        37.5876,
-        37.5971,
-        37.5913
-    ],
-
-    '경도': [
-        127.1284,
-        127.1354,
-        127.1412
-    ]
-})
-
-
-# 수동 데이터 문자열 정리
-for column in text_columns:
-
-    manual_police_facility[column] = (
-        manual_police_facility[column]
-        .astype('string')
-        .str.strip()
-    )
-
-
-# 수동 데이터 위도·경도를 숫자형으로 변환
-for column in [
-    '위도',
-    '경도'
-]:
-
-    manual_police_facility[column] = pd.to_numeric(
-        manual_police_facility[column],
-        errors='coerce'
-    )
-
-
-print('\n[추가하려는 구리시 경찰시설]')
-print(manual_police_facility)
 
 
 #################### 중복 비교용 칼럼 생성 함수 ####################
@@ -161,8 +165,7 @@ def make_duplicate_key(data):
 
     data = data.copy()
 
-    # 수동으로 가져온 좌표가 소수점 네 자리이므로
-    # 좌표를 소수점 네 자리로 맞춰 비교
+    # 좌표를 소수점 네 자리까지 맞춰 비교
     data['_lat_key'] = (
         data['위도']
         .round(4)
@@ -174,10 +177,6 @@ def make_duplicate_key(data):
     )
 
     # 시설명 비교용 문자열 생성
-    #
-    # 예:
-    # 구리경찰서 (본서) → 구리경찰서
-    # 토평지구대 (아천동 관할) → 토평지구대
     data['_name_key'] = (
         data['시설명']
         .fillna('')
@@ -190,7 +189,7 @@ def make_duplicate_key(data):
             regex=True
         )
 
-        # 문자열의 모든 공백 제거
+        # 모든 공백 제거
         .str.replace(
             r'\s+',
             '',
@@ -203,7 +202,7 @@ def make_duplicate_key(data):
     return data
 
 
-#################### 모든 데이터에 비교용 칼럼 추가 ####################
+#################### 비교용 칼럼 추가 ####################
 
 gwangjin_facility = make_duplicate_key(
     gwangjin_facility
@@ -213,16 +212,10 @@ add_facility = make_duplicate_key(
     add_facility
 )
 
-manual_police_facility = make_duplicate_key(
-    manual_police_facility
-)
 
-
-# 같은 시설이라고 판단할 기준
-#
 # 시설명이 같고,
 # 위도와 경도가 소수점 네 자리까지 같으면
-# 동일한 시설로 판단
+# 같은 시설로 판단
 duplicate_key_columns = [
     '_name_key',
     '_lat_key',
@@ -230,101 +223,56 @@ duplicate_key_columns = [
 ]
 
 
-#################### 추가 데이터 내부 중복 제거 ####################
+#################### 각 데이터 내부 중복 제거 ####################
 
-add_facility = add_facility.drop_duplicates(
-    subset=duplicate_key_columns,
-    keep='first'
-).copy()
-
-
-#################### 수동 경찰시설 중 이미 존재하는 시설 확인 ####################
-
-# 기존 광진구 데이터와 추가 데이터를 합쳐서
-# 현재 존재하는 모든 시설의 비교 기준을 만듦
-current_facility_keys = pd.concat(
-    [
-        gwangjin_facility[
-            duplicate_key_columns
-        ],
-
-        add_facility[
-            duplicate_key_columns
-        ]
-    ],
-    ignore_index=True
+gwangjin_before_count = len(
+    gwangjin_facility
 )
 
-
-current_facility_keys = (
-    current_facility_keys
-    .drop_duplicates()
-    .assign(
-        facility_already_exists=True
+gwangjin_facility = (
+    gwangjin_facility
+    .drop_duplicates(
+        subset=duplicate_key_columns,
+        keep='first'
     )
+    .copy()
+)
+
+gwangjin_removed_count = (
+    gwangjin_before_count
+    - len(gwangjin_facility)
 )
 
 
-# 수동으로 만든 경찰시설이
-# 현재 데이터에 이미 존재하는지 확인
-manual_police_checked = manual_police_facility.merge(
-    current_facility_keys,
-    on=duplicate_key_columns,
-    how='left'
+add_before_count = len(
+    add_facility
+)
+
+add_facility = (
+    add_facility
+    .drop_duplicates(
+        subset=duplicate_key_columns,
+        keep='first'
+    )
+    .copy()
+)
+
+add_removed_count = (
+    add_before_count
+    - len(add_facility)
 )
 
 
-# 기존 데이터에 없는 경찰시설만 선택
-new_manual_police = manual_police_checked[
-    manual_police_checked[
-        'facility_already_exists'
-    ].isna()
-].copy()
+print('\n[기존 광진구 데이터 내부 중복 제거 개수]')
+print(gwangjin_removed_count)
+
+print('\n[추가 데이터 내부 중복 제거 개수]')
+print(add_removed_count)
 
 
-new_manual_police = new_manual_police.drop(
-    columns='facility_already_exists'
-)
+#################### 기존 데이터에 없는 시설만 선택 ####################
 
-
-print('\n[수동 데이터 중 실제 추가될 경찰시설]')
-print(
-    new_manual_police[
-        [
-            '시설명',
-            '시설유형',
-            '주소',
-            '위도',
-            '경도'
-        ]
-    ]
-)
-
-print('\n[수동 데이터 중 실제 추가될 시설 개수]')
-print(len(new_manual_police))
-
-
-#################### 없는 경찰시설만 추가 데이터에 합치기 ####################
-
-add_facility = pd.concat(
-    [
-        add_facility,
-        new_manual_police
-    ],
-    ignore_index=True
-)
-
-
-# 혹시 모를 추가 데이터 내부 중복을 다시 제거
-add_facility = add_facility.drop_duplicates(
-    subset=duplicate_key_columns,
-    keep='first'
-).copy()
-
-
-#################### 기존 광진구 데이터에 없는 시설만 선택 ####################
-
-# 기존 광진구 시설의 비교 기준만 추출
+# 기존 광진구 시설의 비교 기준 생성
 gwangjin_keys = (
     gwangjin_facility[
         duplicate_key_columns
@@ -336,8 +284,7 @@ gwangjin_keys = (
 )
 
 
-# 추가 데이터의 각 시설이
-# 기존 광진구 데이터에 존재하는지 확인
+# 추가 데이터와 기존 광진구 데이터 비교
 add_facility_checked = add_facility.merge(
     gwangjin_keys,
     on=duplicate_key_columns,
@@ -345,7 +292,7 @@ add_facility_checked = add_facility.merge(
 )
 
 
-# existing_facility가 비어 있으면
+# existing_facility 값이 없으면
 # 기존 광진구 데이터에 없는 새로운 시설
 new_facility = add_facility_checked[
     add_facility_checked[
@@ -355,7 +302,9 @@ new_facility = add_facility_checked[
 
 
 new_facility = new_facility.drop(
-    columns='existing_facility'
+    columns=[
+        'existing_facility'
+    ]
 )
 
 
@@ -383,10 +332,14 @@ final_facility = pd.concat(
 
 #################### 최종 중복 한 번 더 제거 ####################
 
-final_facility = final_facility.drop_duplicates(
-    subset=duplicate_key_columns,
-    keep='first'
-).copy()
+final_facility = (
+    final_facility
+    .drop_duplicates(
+        subset=duplicate_key_columns,
+        keep='first'
+    )
+    .copy()
+)
 
 
 #################### 임시 비교용 칼럼 제거 ####################
@@ -406,6 +359,10 @@ new_facility = new_facility.drop(
     columns=temporary_columns
 )
 
+gwangjin_facility = gwangjin_facility.drop(
+    columns=temporary_columns
+)
+
 
 #################### 칼럼 순서 정리 ####################
 
@@ -420,6 +377,14 @@ final_columns = [
 
 
 final_facility = final_facility[
+    final_columns
+]
+
+new_facility = new_facility[
+    final_columns
+]
+
+gwangjin_facility = gwangjin_facility[
     final_columns
 ]
 
@@ -473,56 +438,79 @@ final_police_facility = final_facility[
 
 
 print('\n[최종 경찰시설 확인]')
-print(
-    final_police_facility[
-        [
-            '시설명',
-            '시설유형',
-            '주소',
+
+if final_police_facility.empty:
+
+    print('경찰시설 데이터가 없습니다.')
+
+else:
+
+    print(
+        final_police_facility[
+            [
+                '시설명',
+                '시설유형',
+                '주소',
+                '위도',
+                '경도',
+                '데이터출처'
+            ]
+        ].to_string(
+            index=False
+        )
+    )
+
+
+#################### 동일한 좌표의 시설 확인 ####################
+
+same_coordinate_facility = final_facility[
+    final_facility.duplicated(
+        subset=[
             '위도',
-            '경도',
-            '데이터출처'
+            '경도'
+        ],
+        keep=False
+    )
+].copy()
+
+
+duplicate_count = final_facility.duplicated(
+    subset=[
+        '위도',
+        '경도'
+    ]
+).sum()
+
+
+print('\n[위도·경도가 중복되는 시설 개수]')
+print(f'{duplicate_count}개')
+
+
+if not same_coordinate_facility.empty:
+
+    print('\n[동일한 좌표를 사용하는 시설 목록]')
+
+    print(
+        same_coordinate_facility[
+            [
+                '시설명',
+                '시설유형',
+                '주소',
+                '위도',
+                '경도',
+                '데이터출처'
+            ]
         ]
-    ].to_string(
-        index=False
+        .sort_values(
+            by=[
+                '위도',
+                '경도'
+            ]
+        )
+        .to_string(
+            index=False
+        )
     )
-)
-
-
-#################### 구리시 수동 경찰시설 포함 여부 확인 ####################
-
-guri_police_names = [
-    '구리경찰서',
-    '교문지구대',
-    '토평지구대'
-]
-
-
-guri_police_check = final_facility[
-    final_facility[
-        '시설명'
-    ].fillna('').str.contains(
-        '|'.join(guri_police_names),
-        regex=True
-    )
-]
-
-
-print('\n[구리시 경찰시설 최종 포함 여부]')
-print(
-    guri_police_check[
-        [
-            '시설명',
-            '시설유형',
-            '주소',
-            '위도',
-            '경도',
-            '데이터출처'
-        ]
-    ].to_string(
-        index=False
-    )
-)
 
 
 #################### 결과 저장 ####################
@@ -541,3 +529,64 @@ final_facility.to_csv(
 
 print('\n최종 통합 데이터 저장 완료')
 print('저장 경로:', output_path)
+
+
+
+############ 확인용 ###########
+
+# 위도·경도별로 시설 개수와 시설유형 목록 정리
+duplicate_location_info = (
+    final_facility
+    .groupby(['위도', '경도'])
+    .agg(
+        중복개수=('시설유형', 'size'),
+        중복시설유형=(
+            '시설유형',
+            lambda x: ', '.join(
+                sorted(
+                    x.dropna().astype(str).unique()
+                )
+            )
+        )
+    )
+    .reset_index()
+)
+
+
+# 5개 초과인 좌표만 선택하고, 중복개수가 많은 순으로 정렬
+duplicate_location_info = (
+    duplicate_location_info[
+        duplicate_location_info['중복개수'] > 5
+    ]
+    .sort_values(
+        by='중복개수',
+        ascending=False
+    )
+)
+
+
+# 출력
+for _, row in duplicate_location_info.iterrows():
+
+    print(
+        f"({row['위도']}, {row['경도']})"
+        f" -> {row['중복개수']}개의 중복 시설물 발견"
+        f" (중복시설유형: {row['중복시설유형']})"
+    )
+import numpy as np
+
+print('확인')
+
+print(
+    gwangjin_facility[
+        np.isclose(
+            gwangjin_facility['위도'],
+            37.55552
+        )
+        &
+        np.isclose(
+            gwangjin_facility['경도'],
+            127.08984
+        )
+    ]
+)
