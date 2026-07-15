@@ -687,51 +687,182 @@ def add_grid_point_cross_markers(
     return map_obj
 
 
+
 def add_facility_circle_markers(
     map_obj,
     facility_df,
 ):
-    """시설물의 위치를 유형별 색상이 다른 원형 마커로 표시한다."""
+    """
+    같은 좌표에 있는 시설물을 하나의 원형 마커로 묶어 표시한다.
+
+    마커를 클릭하면 해당 좌표의 시설유형별 개수와
+    전체 시설 개수를 확인할 수 있다.
+    """
 
     facility_layer = folium.FeatureGroup(
         name="안전시설",
         show=True,
     )
 
-    for _, facility in facility_df.iterrows():
-        facility_type = facility["시설유형"]
+    # 위도·경도별로 시설물 묶기
+    grouped_facility = (
+        facility_df
+        .groupby(
+            [
+                "위도",
+                "경도",
+            ],
+            dropna=False,
+        )
+        .agg(
+            전체시설개수=(
+                "시설유형",
+                "size",
+            ),
 
-        marker_color = facility_color_dict.get(
-            facility_type,
-            "gray",
+            시설유형별개수=(
+                "시설유형",
+                lambda x: x.value_counts().to_dict(),
+            ),
+
+            시설명목록=(
+                "시설명",
+                lambda x: list(
+                    x.dropna()
+                    .astype(str)
+                    .unique()
+                ),
+            ),
+        )
+        .reset_index()
+    )
+
+    for _, facility in grouped_facility.iterrows():
+
+        facility_type_count_dict = (
+            facility["시설유형별개수"]
         )
 
-        marker_tooltip = facility_type
+        total_facility_count = int(
+            facility["전체시설개수"]
+        )
 
-        if "시설명" in facility_df.columns:
-            facility_name = facility.get("시설명")
-            if pd.notna(facility_name):
-                marker_tooltip = (
-                    f"{facility_type}: {facility_name}"
+        # 시설유형별 개수 HTML 만들기
+        facility_type_count_html = ""
+
+        for facility_type, count in (
+            facility_type_count_dict.items()
+        ):
+            facility_type_count_html += (
+                f"{facility_type}: "
+                f"<b>{count}개</b><br>"
+            )
+
+        # 시설명이 너무 길어지는 것을 막기 위해
+        # 최대 10개까지만 표시
+        facility_name_list = (
+            facility["시설명목록"]
+        )
+
+        displayed_facility_names = (
+            facility_name_list[:10]
+        )
+
+        facility_name_html = "<br>".join(
+            displayed_facility_names
+        )
+
+        if len(facility_name_list) > 10:
+            facility_name_html += (
+                f"<br>외 "
+                f"{len(facility_name_list) - 10}개"
+            )
+
+        popup_html = f"""
+        <div style="
+            min-width: 220px;
+            font-size: 13px;
+            line-height: 1.55;
+        ">
+            <b>해당 위치 시설 정보</b><br>
+            <hr style="
+                margin: 5px 0;
+                border: 0;
+                border-top: 1px solid #bbbbbb;
+            ">
+
+            {facility_type_count_html}
+
+            <b>전체 시설: {total_facility_count}개</b><br>
+
+            <hr style="
+                margin: 5px 0;
+                border: 0;
+                border-top: 1px solid #bbbbbb;
+            ">
+
+            위도: {facility['위도']}<br>
+            경도: {facility['경도']}<br>
+
+            <br>
+            <b>시설명</b><br>
+            {facility_name_html}
+        </div>
+        """
+
+        # 마커 색상 결정
+        #
+        # 시설유형이 하나뿐이면 해당 시설 색상 사용
+        # 여러 시설유형이 섞여 있으면 보라색 사용
+        facility_types = list(
+            facility_type_count_dict.keys()
+        )
+
+        if len(facility_types) == 1:
+
+            marker_color = (
+                facility_color_dict.get(
+                    facility_types[0],
+                    "gray",
                 )
+            )
+
+        else:
+
+            marker_color = "purple"
+
+        # 시설 개수가 많을수록 원을 조금 크게 표시
+        marker_radius = min(
+            3 + total_facility_count * 0.7,
+            13,
+        )
+
+        tooltip_text = (
+            f"이 위치에 시설 "
+            f"{total_facility_count}개"
+        )
 
         folium.CircleMarker(
             location=[
                 facility["위도"],
                 facility["경도"],
             ],
-            radius=2.5,
+            radius=marker_radius,
             color=marker_color,
             weight=1,
             fill=True,
             fill_color=marker_color,
-            fill_opacity=0.85,
-            tooltip=marker_tooltip,
+            fill_opacity=0.9,
+            tooltip=tooltip_text,
+            popup=folium.Popup(
+                popup_html,
+                max_width=320,
+            ),
         ).add_to(facility_layer)
 
     facility_layer.add_to(map_obj)
-    return map_obj
 
+    return map_obj
 
 def add_grade_legend(map_obj):
     """지도 왼쪽 아래에 A~E 등급 색상 범례를 추가한다."""
