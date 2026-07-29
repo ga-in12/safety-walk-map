@@ -8,7 +8,6 @@
 """
 
 from pathlib import Path
-
 import folium
 import geopandas as gpd
 import numpy as np
@@ -47,6 +46,10 @@ output_dir.mkdir(parents=True, exist_ok=True)
 
 # 격자 한 칸의 가로·세로 길이
 cell_size_m = 500
+
+# 격자 밖 인접 시설을 반영할 최대 거리
+# 격자 경계에서 50m 이상 떨어진 시설은 해당 격자 점수에 반영하지 않음
+adjacent_buffer_m = 50
 
 # 광진구 중심 좌표
 center_lat = 37.5384
@@ -227,6 +230,21 @@ if unknown_facility_types:
         unknown_facility_types,
     )
 
+# 시설 위치를 Point geometry로 변환
+facility_gdf_4326 = gpd.GeoDataFrame(
+    facility_data.copy(),
+    geometry=gpd.points_from_xy(
+        facility_data["경도"],
+        facility_data["위도"],
+    ),
+    crs="EPSG:4326",
+)
+
+# 격자와 시설 사이 거리를 m 단위로 계산하기 위해 EPSG:5186으로 변환
+facility_gdf_5186 = facility_gdf_4326.to_crs(
+    epsg=5186
+)
+
 
 # =========================================================
 # 5. 500m를 위도·경도 변화량으로 변환
@@ -354,16 +372,94 @@ def counting_facility(cell_polygon, facility_df):
     return facility_count_dict
 
 
-def calculate_safety_score_cell(facility_count_dict):
-    """시설별 개수와 가중치로 한 격자의 안전점수를 계산한다."""
+def calculate_distance_weight(distance_m):
+    """격자 경계에서 가까울수록 높은 영향값을 반환한다."""
+
+    return max(
+        0.0,
+        1 - distance_m / adjacent_buffer_m,
+    )
+
+
+def calculate_facility_influence(
+    cell_polygon,
+    facility_gdf,
+):
+    """
+    안전점수 계산용 시설 영향값을 구한다.
+
+    격자 내부 시설은 1.0으로 반영하고,
+    격자 밖 50m 이내 시설은 격자 경계와 가까울수록 크게 반영한다.
+    """
+
+    facility_influence_dict = {
+        "CCTV": 0.0,
+        "가로등": 0.0,
+        "비상벨": 0.0,
+        "경찰서": 0.0,
+        "파출소": 0.0,
+        "지구대": 0.0,
+    }
+
+    # 위도·경도 격자를 거리 계산이 가능한 미터 좌표계로 변환
+    cell_polygon_5186 = gpd.GeoSeries(
+        [cell_polygon],
+        crs="EPSG:4326",
+    ).to_crs(
+        epsg=5186
+    ).iloc[0]
+
+    # 격자 경계 바깥 50m까지 확장
+    expanded_cell_5186 = cell_polygon_5186.buffer(
+        adjacent_buffer_m
+    )
+
+    # 원래 격자 또는 확장 영역 안에 있는 시설만 선택
+    nearby_facility_gdf = facility_gdf[
+        facility_gdf.geometry.intersects(
+            expanded_cell_5186
+        )
+    ]
+
+    for _, facility in nearby_facility_gdf.iterrows():
+        facility_type = facility["시설유형"]
+
+        if facility_type not in facility_influence_dict:
+            continue
+
+        facility_point = facility.geometry
+
+        # 원래 격자 내부 시설은 100% 반영
+        if cell_polygon_5186.covers(facility_point):
+            influence = 1.0
+
+        # 격자 밖 시설은 경계와의 거리에 따라 0~1 사이로 반영
+        else:
+            distance_m = cell_polygon_5186.distance(
+                facility_point
+            )
+
+            influence = calculate_distance_weight(
+                distance_m
+            )
+
+        facility_influence_dict[
+            facility_type
+        ] += influence
+
+    return facility_influence_dict
+
+
+def calculate_safety_score_cell(facility_influence_dict):
+    """시설별 거리감쇠 영향값과 가중치로 안전점수를 계산한다."""
 
     safety_score = 0.0
 
     for facility_type, weight in safety_weight_dict.items():
-        count = facility_count_dict[facility_type]
+        influence = facility_influence_dict[facility_type]
         max_count = max_count_dict[facility_type]
 
-        ratio = min(count / max_count, 1)
+        ratio = min(influence / max_count, 1)
         safety_score += weight * ratio
 
     return float(safety_score)
@@ -437,13 +533,20 @@ for point_number, (
     ):
         continue
 
+    # CSV와 지도에는 기존처럼 실제 격자 내부 시설 개수를 저장
     facility_count_dict = counting_facility(
         cell_polygon,
         facility_data,
     )
 
+    # 안전점수에는 격자 밖 50m 이내 시설의 거리감쇠 영향도 반영
+    facility_influence_dict = calculate_facility_influence(
+        cell_polygon,
+        facility_gdf_5186,
+    )
+
     safety_score = calculate_safety_score_cell(
-        facility_count_dict
+        facility_influence_dict
     )
 
     result_rows.append(
@@ -863,6 +966,8 @@ def add_facility_circle_markers(
     facility_layer.add_to(map_obj)
 
     return map_obj
+
+
 
 def add_grade_legend(map_obj):
     """지도 왼쪽 아래에 A~E 등급 색상 범례를 추가한다."""
