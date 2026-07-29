@@ -4,44 +4,51 @@ import osmnx as ox
 import pandas as pd
 import folium
 from sklearn.neighbors import BallTree
+from geopy.geocoders import Nominatim
+from geopy.exc import GeocoderTimedOut, GeocoderServiceError
 
 # 설정값
 place = "Gwangjin-gu, Seoul, South Korea"
 graph_path = "gwangjin.graphml"
 
-# 임시 CSV 파일사용, 추후 변경예정
-grid_path = "route/temp__safety_grid.csv"
+# 최종 safety_score CSV 경로로 변경
+grid_path = "safety_score_result.csv"
 
-# 현재 임시 테스트용 CSV 기준 컬럼명
-LAT_COL = "위도"
-LON_COL = "경도"
-SCORE_COL = "안전점수"
-GRADE_COL = "안전등급"
-
-# 최종 CSV에 추가할 예정인 컬럼들
-# GRID_ID_COL = "grid_id"                      # 추가예정
-# ROW_COL = "row"                               # 추가예정
-# COL_COL = "col"                               # 추가예정
-# GRID_SIZE_COL = "grid_size_m"                 # 추가예정
-# CCTV_COUNT_COL = "cctv_count"                 # 추가예정
-# STREETLIGHT_COUNT_COL = "streetlight_count"   # 추가예정
-# EMERGENCY_BELL_COUNT_COL = "emergency_bell_count"  # 추가예정
-# POLICE_COUNT_COL = "police_count"             # 추가예정
+# ===== 최종 CSV 스키마 (safety_score_result.csv 기준) =====
+GRID_ID_COL = "grid_id"
+ROW_COL = "row"
+COL_COL = "col"
+LAT_COL = "center_lat"
+LON_COL = "center_lng"
+GRID_SIZE_COL = "grid_size_m"
+GRID_AREA_COL = "grid_area_m2"
+CCTV_COUNT_COL = "cctv_count"
+STREETLIGHT_COUNT_COL = "streetlight_count"
+EMERGENCY_BELL_COUNT_COL = "emergency_bell_count"
+POLICE_STATION_COUNT_COL = "police_station_count"
+POLICE_SUBSTATION_COUNT_COL = "police_substation_count"
+POLICE_BOX_COUNT_COL = "police_box_count"
+TOTAL_FACILITY_COUNT_COL = "total_facility_count"
+SCORE_COL = "safety_score"
+GRADE_COL = "score_grade"
+GRADE_COLOR_COL = "grade_color"
 
 # 안전 가중치 튜닝 파라미터
-# 0 = 시간만 최적화, 1 = 안전만 최적화
-ALPHA_DEFAULT = 0.5
+# 전에 패널티가 너무 적었기 때문에 알파값 크게 조정(테스트 후 수정필요)
+ALPHA_DEFAULT = 12
 
 # 안전경로 추천 임계값 (최단경로 대비 시간 증가율)
 TIME_INCREASE_THRESHOLD = 0.15
 
 # 지도 시각화에 사용할 타일
 # "CartoDB positron" : 깔끔하고 UI에 얹기 좋음
-# "OpenStreetMap"    : 지명/상호 등 정보량이 많음
 MAP_TILES = "CartoDB positron"
 
-# 결과 지도를 저장할 경로 (팀원 공유 / 발표용)
+# 결과 지도를 저장할 경로 (테스트 및 확인용)
 MAP_OUTPUT_PATH = "route_map.html"
+
+# 지오코딩에 사용할 지역명 접미사 (광진구 내 주소/장소명 정확도를 높이기 위함)
+GEOCODE_REGION_HINT = "광진구, 서울"
 
 
 # 그래프 다운로드 (없으면 다운로드, 있으면 재사용)
@@ -64,19 +71,24 @@ def load_graph():
     return G
 
 
-# safety_grid.csv 읽기(현재는 테스트용)
+# safety_score_result.csv 읽기 (최종 스키마)
 def load_safety_grid():
-    # 파일 경로 읽기
     grid = pd.read_csv(grid_path, encoding="utf-8-sig")
 
-    # 설정한 한글 컬럼명들이 파일에 존재하는지 확인
-    missing = [c for c in (LAT_COL, LON_COL, SCORE_COL) if c not in grid.columns]
+    required = [LAT_COL, LON_COL, SCORE_COL]
+    missing = [c for c in required if c not in grid.columns]
     if missing:
-        raise ValueError(f"safety_grid.csv에 다음 컬럼이 없습니다: {missing}")
+        raise ValueError(f"{grid_path}에 다음 컬럼이 없습니다: {missing}")
 
-    # GRADE_COL(안전등급)은 아직 사용 안 함 (추가예정)
-    if GRADE_COL not in grid.columns:
-        print(f"참고: {GRADE_COL} 컬럼 없음 (지금은 사용 안 하므로 무시)")
+    optional = [
+        GRID_ID_COL, ROW_COL, COL_COL, GRID_SIZE_COL,
+        CCTV_COUNT_COL, STREETLIGHT_COUNT_COL, EMERGENCY_BELL_COUNT_COL,
+        POLICE_STATION_COUNT_COL, POLICE_SUBSTATION_COUNT_COL, POLICE_BOX_COUNT_COL,
+        GRADE_COL, GRADE_COLOR_COL,
+    ]
+    missing_optional = [c for c in optional if c not in grid.columns]
+    if missing_optional:
+        print(f"참고: 다음 컬럼은 없어서 무시함 : {missing_optional}")
 
     return grid
 
@@ -142,6 +154,9 @@ def summarize_route(G, route):
 # 출발/도착 좌표를 받아
 # 최단경로/안전경로를 모두 계산하고
 # 추천 경로까지 판단해서 반환
+
+# **이 함수는 항상 위도/경도(lat, lon)만 받음
+# 주소 -> 좌표 변환(geocode_address)이나 지도 클릭 좌표 추출은 UI/입력 계층에서만(이 함수에 들어오면 안됨)
 def find_route(G, orig_lat, orig_lon, dest_lat, dest_lon, alpha=ALPHA_DEFAULT):
     G = attach_safe_weights(G, alpha=alpha)
 
@@ -172,9 +187,6 @@ def find_route(G, orig_lat, orig_lon, dest_lat, dest_lon, alpha=ALPHA_DEFAULT):
 ## 시각화 (Folium 기반 인터랙티브 지도)
 # 파랑 실선 : 최단경로
 # 초록 대시선 : 안전경로
-# -> 회색 도로망 이미지 대신 실제 지도 타일(도로/건물/지명) 위에 경로를 그려서
-#    훨씬 구체적으로 보이고, Streamlit에서 streamlit_folium.st_folium()으로
-#    그대로 렌더링할 수 있음
 def visualize(fast_route, safe_route, safety_grid=None):
     fast_coords = fast_route["coords"]
     safe_coords = safe_route["coords"]
@@ -189,7 +201,6 @@ def visualize(fast_route, safe_route, safety_grid=None):
         control_scale=True,
     )
 
-    # 최단 경로 (파란 실선)
     folium.PolyLine(
         fast_coords,
         color="#1f77ff",
@@ -198,7 +209,6 @@ def visualize(fast_route, safe_route, safety_grid=None):
         tooltip=f"최단 경로: {fast_route['distance_m']:.0f}m / {fast_route['time_min']:.1f}분",
     ).add_to(m)
 
-    # 안전 경로 (초록 대시선 - 최단경로와 겹쳐도 구분되도록)
     folium.PolyLine(
         safe_coords,
         color="#2ca02c",
@@ -208,7 +218,6 @@ def visualize(fast_route, safe_route, safety_grid=None):
         tooltip=f"안전 경로: {safe_route['distance_m']:.0f}m / {safe_route['time_min']:.1f}분",
     ).add_to(m)
 
-    # 출발/도착 마커
     folium.Marker(
         location=[start_lat, start_lon],
         popup=folium.Popup("<b>출발지</b>", max_width=200),
@@ -220,9 +229,7 @@ def visualize(fast_route, safe_route, safety_grid=None):
         popup=folium.Popup("<b>도착지</b>", max_width=200),
         icon=folium.Icon(color="red", icon="flag-checkered", prefix="fa"),
     ).add_to(m)
-    
 
-    # 범례
     legend_html = """
     <div style="position: fixed; bottom: 30px; left: 30px; z-index:9999;
                 background-color: white; padding: 10px 14px; border-radius: 8px;
@@ -237,22 +244,66 @@ def visualize(fast_route, safe_route, safety_grid=None):
     return m
 
 
+# 입력 계층: 주소/장소명(위경도값이 아닌 텍스트) -> 좌표 변환 (find_route()와는 분리)
+_geolocator = Nominatim(user_agent="gwangjin_safety_route")
+
+
+def geocode_address(address: str):
+    """주소 또는 장소명을 (위도, 경도)로 변환. 실패 시 None 반환."""
+    try:
+        location = _geolocator.geocode(f"{address}, {GEOCODE_REGION_HINT}", timeout=5)
+    except (GeocoderTimedOut, GeocoderServiceError) as e:
+        print(f"지오코딩 실패: {e}")
+        return None
+
+    if location is None:
+        print(f"'{address}' 주소/장소를 찾을 수 없습니다.")
+        return None
+
+    return location.latitude, location.longitude
+
+
+def get_coords_from_user(label: str):
+    """
+    CLI 테스트용 입력 함수.
+    '위도,경도' 형태로 입력하면 좌표로 바로 파싱하고
+    그 외 문자열은 주소/장소명으로 간주해 지오코딩함
+    (Streamlit에서는 이 함수 대신 st_folium 클릭 좌표를 그대로 find_route()에 넘기면 됨)
+    """
+    raw = input(f"{label} 입력 (예: '37.5404,127.0700' 또는 '건대입구역'): ").strip()
+
+    if "," in raw:
+        parts = raw.split(",")
+        if len(parts) == 2:
+            try:
+                lat, lon = float(parts[0].strip()), float(parts[1].strip())
+                return lat, lon
+            except ValueError:
+                pass  # 좌표 파싱 실패 -> 주소로 취급
+
+    result = geocode_address(raw)
+    if result is None:
+        raise ValueError(f"{label} 좌표를 확인할 수 없습니다. 다시 시도해주세요.")
+
+    lat, lon = result
+    print(f"  -> '{raw}' 를 좌표 ({lat:.6f}, {lon:.6f}) 로 변환함")
+    return lat, lon
+
+
 # 실행부
 if __name__ == "__main__":
     G = load_graph()
     grid = load_safety_grid()
     G = attach_safety_scores(G, grid)
 
-    print("출발지 좌표를 입력하세요 (예: 37.5404, 127.0700)")
-    orig_lat = float(input("출발지 위도: "))
-    orig_lon = float(input("출발지 경도: "))
+    print("출발지를 입력하세요 (좌표 또는 주소/장소명 모두 가능)")
+    orig_lat, orig_lon = get_coords_from_user("출발지")
 
-    print("\n도착지 좌표를 입력하세요 (예: 37.5485, 127.0815)")
-    dest_lat = float(input("도착지 위도: "))
-    dest_lon = float(input("도착지 경도: "))
+    print("\n도착지를 입력하세요 (좌표 또는 주소/장소명 모두 가능)")
+    dest_lat, dest_lon = get_coords_from_user("도착지")
 
     result = find_route(G, orig_lat, orig_lon, dest_lat, dest_lon, alpha=ALPHA_DEFAULT)
-    
+
     print()
     print("===== 최단경로 =====")
     print(f"총 거리 : {result['fast']['distance_m']:.0f} m")
