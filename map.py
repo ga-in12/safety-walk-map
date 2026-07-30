@@ -11,7 +11,27 @@ from folium.plugins import FastMarkerCluster
 import pandas as pd
 import streamlit as st
 
-from route_mock import recommend_safe_route  # 4주차: 경로 추천 목업 함수 
+# [백엔드 모듈 임포트] 다른 팀원이 구현한 경로 및 안전지수 알고리즘 모듈
+try:
+    from Shortest_safety_route import (
+        load_graph, 
+        load_safety_grid, 
+        attach_safety_scores, 
+        find_route
+    )
+except ImportError:
+    try:
+        from OSMnx_test import (
+            load_graph, 
+            load_safety_grid, 
+            attach_safety_scores, 
+            find_route
+        )
+    except ImportError:
+        def load_graph(): raise NotImplementedError("Shortest_safety_route.py 파일이 누락됨.")
+        def load_safety_grid(): raise NotImplementedError("안전지수 그리드 모듈이 누락됨.")
+        def attach_safety_scores(G, grid): return G
+        def find_route(*args, **kwargs): return {}
 
 
 STANDARD_COLUMNS = {
@@ -21,10 +41,7 @@ STANDARD_COLUMNS = {
     "address": "주소",
 }
 
-# 통합 CSV 파일명
 INTEGRATED_CSV_FILENAME = "광진구_안전시설_통합.csv"
-
-# 인코딩 자동 감지용 후보 목록
 ENCODING_CANDIDATES = ["utf-8-sig", "cp949", "euc-kr", "utf-8"]
 
 
@@ -42,15 +59,11 @@ def _read_csv_with_fallback_encoding(filepath: str) -> pd.DataFrame:
 
 @st.cache_data(show_spinner="시설 데이터 불러오는 중...")
 def load_all_facilities(file_dir: str) -> pd.DataFrame:
-    """통합 CSV 읽어서 표준 컬럼 형태로 반환함."""
     filepath = os.path.join(file_dir, INTEGRATED_CSV_FILENAME)
     if not os.path.exists(filepath):
-        print(f"[안내] {INTEGRATED_CSV_FILENAME} 없음 -> 더미 데이터로 대체 예정")
         return pd.DataFrame(columns=list(STANDARD_COLUMNS.values()))
 
     df = _read_csv_with_fallback_encoding(filepath)
-
-    # BOM이 남아있는 경우에 컬럼명 정리
     df.columns = [c.replace("\ufeff", "").strip() for c in df.columns]
 
     lat_col, lng_col, type_col = (
@@ -59,16 +72,13 @@ def load_all_facilities(file_dir: str) -> pd.DataFrame:
         STANDARD_COLUMNS["type"],
     )
 
-    # 위경도 없는 행이 있을 경우를 대비
     df = df.dropna(subset=[lat_col, lng_col])
-
     keep_cols = [c for c in STANDARD_COLUMNS.values() if c in df.columns]
     df = df[keep_cols].copy()
 
     return df.reset_index(drop=True)
 
 
-# 시설 유형별 마커 디자인 파트
 FACILITY_STYLE = {
     "CCTV": {"color": "blue", "icon": "video-camera", "prefix": "fa"},
     "가로등": {"color": "orange", "icon": "lightbulb-o", "prefix": "fa"},
@@ -85,8 +95,7 @@ def get_marker_style(facility_type: str) -> dict:
     return FACILITY_STYLE.get(facility_type, DEFAULT_STYLE)
 
 
-# Folium 기본 지도 객체 생성
-GWANGJIN_CENTER = [37.5384, 127.0822]  # 광진구 대략 중심 좌표
+GWANGJIN_CENTER = [37.5384, 127.0822]
 
 
 def create_base_map(center=GWANGJIN_CENTER, zoom_start=14) -> folium.Map:
@@ -100,10 +109,6 @@ def create_base_map(center=GWANGJIN_CENTER, zoom_start=14) -> folium.Map:
 
 @st.cache_data(show_spinner="지도 렌더링 중...")
 def build_facility_map(_df_placeholder_unused, selected_types: tuple, data_dir: str, center: tuple, zoom_start: int):
-    """선택된 시설유형 조합이 동일하면 캐시된 지도를 재사용함.
-    (df 자체는 캐시 키로 쓰기엔 무거워서, load_all_facilities가 이미 캐시돼있다는
-    전제로 여기선 selected_types만 키로 사용함)
-    """
     df = load_all_facilities(data_dir)
     type_col = STANDARD_COLUMNS["type"]
     filtered_df = df[df[type_col].isin(selected_types)]
@@ -113,18 +118,8 @@ def build_facility_map(_df_placeholder_unused, selected_types: tuple, data_dir: 
     return m, len(filtered_df), len(df)
 
 
-# 마커가 많은 시설유형(가로등/CCTV/비상벨)은 MarkerCluster로 묶어서 렌더링
-# 그냥 하나씩 Icon 마커로 그리면 5000개 넘는 DOM이 생겨서 브라우저가 멈추거나 무한 로딩하는 오류가 발생함.
-# 경찰서/지구대/파출소 같은 소수 카테고리는 클러스터 없이 진행함.
-CLUSTER_THRESHOLD = 50  # 50개 이상이면 클러스터링 적용
+CLUSTER_THRESHOLD = 50
 
-
-# [4주차 성능 개선] 다량 마커용 JS 콜백
-# 기존에는 파이썬 for문으로 CircleMarker를 하나씩 만들어서 MarkerCluster에 add했는데,
-# CCTV/가로등처럼 수천 개인 유형에서는 이게 페이지 로딩을 심하게 느리게 만들고
-# 브라우저가 회색 화면으로 멈추는 원인이 됨.
-# FastMarkerCluster는 좌표 데이터를 JS 쪽으로 통째로 넘기고 클러스터링 자체를
-# 브라우저(JS)에서 처리해서 훨씬 빠름.
 _FAST_CLUSTER_CALLBACK = """
 function (row) {
     var marker = L.circleMarker(new L.LatLng(row[0], row[1]), {
@@ -141,12 +136,6 @@ function (row) {
 
 
 def add_facility_layers(m: folium.Map, df: pd.DataFrame) -> folium.Map:
-    """시설유형별 FeatureGroup을 만들고 지도에 마커를 추가한 뒤
-    LayerControl로 ON/OFF 토글 기능을 붙임.
-
-    df는 STANDARD_COLUMNS 기준 컬럼(위도, 경도, 시설유형, 주소)을
-    가지고 있다고 가정함.
-    """
     lat_col, lng_col, type_col, addr_col = (
         STANDARD_COLUMNS["lat"],
         STANDARD_COLUMNS["lng"],
@@ -163,11 +152,9 @@ def add_facility_layers(m: folium.Map, df: pd.DataFrame) -> folium.Map:
     for f_type in facility_types:
         sub_df = df[df[type_col] == f_type]
         style = get_marker_style(f_type)
-
         use_cluster = len(sub_df) >= CLUSTER_THRESHOLD
 
         if use_cluster:
-            # 좌표+색상+팝업 텍스트를 리스트로 한 번에 넘겨서 JS에서 클러스터링/렌더링 처리
             popups = f_type
             if addr_col in sub_df.columns:
                 popups = sub_df[addr_col].fillna(f_type).apply(lambda a: f"{f_type}<br>{a}")
@@ -202,25 +189,7 @@ def add_facility_layers(m: folium.Map, df: pd.DataFrame) -> folium.Map:
     return m
 
 
-def build_dummy_data() -> pd.DataFrame:
-    """통합 CSV가 없을 때 대비용 더미 데이터"""
-    data = [
-        {"위도": 37.5400, "경도": 127.0830, "시설유형": "CCTV", "주소": "테스트 주소1"},
-        {"위도": 37.5420, "경도": 127.0810, "시설유형": "가로등", "주소": "테스트 주소2"},
-        {"위도": 37.5370, "경도": 127.0850, "시설유형": "비상벨", "주소": "테스트 주소3"},
-        {"위도": 37.5390, "경도": 127.0795, "시설유형": "파출소", "주소": "테스트 주소4"},
-    ]
-    return pd.DataFrame(data)
-
-
-
-# [4주차 신규] 주소 -> 좌표 변환 (geopy)
-
 def geocode_address(address: str):
-    """주소 문자열을 (위도, 경도) 튜플로 변환함.
-    Nominatim은 무료 API라 요청 제한이 있어서, 실패 시 None을 반환하고
-    화면에서 에러 메시지로 안내함.
-    """
     from geopy.geocoders import Nominatim
     from geopy.exc import GeocoderTimedOut, GeocoderServiceError
 
@@ -236,14 +205,12 @@ def geocode_address(address: str):
 
 
 def add_user_location_marker(m: folium.Map, lat: float, lng: float, label: str = "내 위치") -> folium.Map:
-    """사용자가 입력한 위치를 지도 위에 강조 마커(별 아이콘)로 표시함."""
     folium.Marker(
         location=[lat, lng],
         popup=label,
         tooltip=label,
         icon=folium.Icon(color="green", icon="star", prefix="fa"),
     ).add_to(m)
-    # 위치를 눈에 잘 띄게 하기 위한 반경 원 표시
     folium.Circle(
         location=[lat, lng],
         radius=50,
@@ -254,13 +221,12 @@ def add_user_location_marker(m: folium.Map, lat: float, lng: float, label: str =
     return m
 
 
-# Streamlit 앱
 def run_streamlit_app():
     import streamlit as st
     from streamlit_folium import st_folium
 
     st.set_page_config(page_title="광진구 안전지도", layout="wide")
-    st.title("광진구 안전지수 지도")
+    st.title("광진구 안전지수 지도 및 경로 추천 서비스")
 
     tab1, tab2, tab3 = st.tabs(["지도", "안전지수", "경로 추천"])
 
@@ -268,15 +234,13 @@ def run_streamlit_app():
         st.subheader("시설 위치 지도")
 
         DATA_DIR = "./data"
-        df = load_all_facilities(DATA_DIR)  # @st.cache_data 적용됨 - 매 rerun마다 재로딩 안 함
+        df = load_all_facilities(DATA_DIR)  
 
-        # 시설유형별 필터 (사이드바)
         all_types = sorted(df[STANDARD_COLUMNS["type"]].unique().tolist())
         selected_types = st.sidebar.multiselect(
             "표시할 시설유형 선택", options=all_types, default=all_types
         )
 
-        # [4주차 신규] 주소 입력 -> geopy 좌표 변환 -> 사용자 위치 마커 표시
         st.markdown("##### 내 위치 찾기")
         addr_col, btn_col = st.columns([4, 1])
         address_input = addr_col.text_input(
@@ -297,7 +261,6 @@ def run_streamlit_app():
                     st.session_state["user_location"] = result
                     st.success(f"위치 확인됨: 위도 {result[0]:.5f}, 경도 {result[1]:.5f}")
 
-        # 이전에 찾은 위치가 있으면 유지 (재검색 전까지 지도에 계속 표시)
         if user_location is None and "user_location" in st.session_state:
             user_location = st.session_state["user_location"]
 
@@ -312,17 +275,34 @@ def run_streamlit_app():
         if user_location:
             m = add_user_location_marker(m, user_location[0], user_location[1])
 
-        # returned_objects=[] : 클릭/줌 등 상호작용 데이터를 파이썬으로 안 돌려받게 해서
-        # 매 상호작용마다 전체 스크립트가 무겁게 rerun되는 걸 줄임 (회색 화면/렉의 주요 원인 중 하나)
         st_folium(m, use_container_width=True, height=600, returned_objects=[])
 
     with tab2:
-        st.subheader("안전지수 히트맵 (안전지수 파트 연동 예정)")
-        st.info("안전지수 파트 결과물 연동 대기 중")
+        st.subheader("광진구 500m 격자별 안전지수 히트맵")
+        st.info("안전지수 산출 결과 데이터 연동 완료함.")
+        
+        grid_csv_path = "data/processed/safety_score_result.csv"
+        
+        if os.path.exists(grid_csv_path):
+            grid_df = pd.read_csv(grid_csv_path)
+            st.dataframe(grid_df.head(10), use_container_width=True)
+            st.success(f"안전지수 데이터 로드 성공 ({grid_csv_path})")
+        else:
+            st.warning(f"지정된 경로에 파일이 없음: {grid_csv_path}")
+            st.caption("data/processed 폴더 안에 safety_score_result.csv 파일이 있는지 확인 바람.")
 
     with tab3:
         st.subheader("안전 우선 경로 추천")
-        st.caption("경로 추천 알고리즘 연동 전까지는 목업 함수로 화면만 구성함")
+        st.caption("최단 거리 경로와 안전 가중치가 반영된 안전 경로를 비교하여 안내함.")
+
+        alpha_val = st.slider(
+            "안전 가중치 튜닝 (α)", 
+            min_value=0.0, 
+            max_value=1.0, 
+            value=0.5, 
+            step=0.1,
+            help="0 = 시간/거리만 최적화, 1 = 안전시설 밀도만 최적화"
+        )
 
         c1, c2 = st.columns(2)
         start_addr = c1.text_input("출발지 주소", key="route_start")
@@ -338,28 +318,57 @@ def run_streamlit_app():
                 if start_loc is None or end_loc is None:
                     st.error("출발지 또는 도착지 주소를 찾을 수 없음.")
                 else:
-                    result = recommend_safe_route(
-                        start_loc[0], start_loc[1], end_loc[0], end_loc[1]
-                    )
+                    with st.spinner("경로 탐색 알고리즘 실행 중임..."):
+                        try:
+                            G = load_graph()
+                            grid = load_safety_grid()
+                            G = attach_safety_scores(G, grid)
 
-                    route_map = create_base_map(center=start_loc, zoom_start=15)
-                    folSTium.PolyLine(
-                        result["path"], color="blue", weight=5, opacity=0.8
-                    ).add_to(route_map)
-                    route_map = add_user_location_marker(
-                        route_map, start_loc[0], start_loc[1], label="출발지"
-                    )
-                    folium.Marker(
-                        location=end_loc,
-                        popup="도착지",
-                        icon=folium.Icon(color="red", icon="flag", prefix="fa"),
-                    ).add_to(route_map)
+                            result = find_route(
+                                G, 
+                                orig_lat=start_loc[0], 
+                                orig_lon=start_loc[1], 
+                                dest_lat=end_loc[0], 
+                                dest_lon=end_loc[1], 
+                                alpha=alpha_val
+                            )
 
-                    st_folium(route_map, use_container_width=True, height=500, returned_objects=[])
+                            fast_route = result.get("fast_route")
+                            safe_route = result.get("safe_route")
 
-                    m1, m2 = st.columns(2)
-                    m1.metric("거리", f"{result['distance_m']:.0f} m")
-                    m2.metric("안전지수", f"{result['safety_score']:.1f}")
+                            route_map = create_base_map(center=start_loc, zoom_start=15)
+                            
+                            if fast_route and "coords" in fast_route:
+                                folium.PolyLine(
+                                    fast_route["coords"], color="blue", weight=5, opacity=0.8, tooltip="최단 경로"
+                                ).add_to(route_map)
+
+                            if safe_route and "coords" in safe_route:
+                                folium.PolyLine(
+                                    safe_route["coords"], color="green", weight=6, dash_array="10, 10", opacity=0.9, tooltip="안전 추천 경로"
+                                ).add_to(route_map)
+
+                            route_map = add_user_location_marker(
+                                route_map, start_loc[0], start_loc[1], label="출발지"
+                            )
+                            folium.Marker(
+                                location=end_loc,
+                                popup="도착지",
+                                icon=folium.Icon(color="red", icon="flag", prefix="fa"),
+                            ).add_to(route_map)
+
+                            st_folium(route_map, use_container_width=True, height=500, returned_objects=[])
+
+                            m1, m2 = st.columns(2)
+                            if fast_route and "distance_m" in fast_route:
+                                m1.metric("거리", f"{fast_route['distance_m']:.0f} m")
+                            if safe_route and "safety_score" in safe_route:
+                                m2.metric("안전지수", f"{safe_route['safety_score']:.1f}")
+
+                            st.success("경로 탐색이 완료됨.")
+
+                        except Exception as e:
+                            st.error(f"경로 탐색 중 오류가 발생함: {e}")
 
 
 if __name__ == "__main__":
