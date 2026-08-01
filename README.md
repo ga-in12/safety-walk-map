@@ -29,3 +29,13 @@
 | 안전지수 | 반경 1km 가중합산 · 히트맵 · A~E 등급 |
 | 경로 | OSMnx 도로 그래프 · Dijkstra 안전경로 추천 |
 
+## 데이터 출처
+
+| 데이터 | 출처 | 담당 기관 | URL | 데이터 기준일 | 다운로드 날짜 |
+|---|---|---|---|---|---|
+| CCTV | 행정안전부 LocalData | 개인정보보호위원회 신기술개인정보과 | https://file.localdata.go.kr/file/emergency_call_box_info/info | 2025.11.27 | 2026.06.29 |
+| 비상벨 | 행정안전부 LocalData | 국토교통부 주택정비과 | https://file.localdata.go.kr/file/cctv_info/info | 2025.11.27 | 2026.06.29 |
+| 경찰서 | 공공데이터포털 | 경찰청 기획조정관실 혁신기획조정관 | https://www.data.go.kr/data/15124966/fileData.do | 2025.05.02 | 2026.06.29 |
+| 파출소 | 공공데이터포털 | 경찰청 범죄예방대응국 지역경찰운영과 | https://www.data.go.kr/data/15077036/fileData.do | 2026.02.19 | 2026.06.29 |
+| 가로등(광진구) | 공공데이터포털 | 서울특별시 광진구 스마트정보과 | https://www.data.go.kr/data/15070592/fileData.do | 2025.07.29 | 2026.06.29 |
+| 가로등(서울시) | 공공데이터포털 | 서울특별시 데이터전략과 | https://www.data.go.kr/data/15107934/fileData.do | 2025.11.20 | 2026.07.13 |
