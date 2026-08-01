@@ -12,7 +12,7 @@ place = "Gwangjin-gu, Seoul, South Korea"
 graph_path = "gwangjin.graphml"
 
 # 최종 safety_score CSV 경로로 변경
-grid_path = "safety_score_result.csv"
+grid_path = "data/processed/safety_score_result.csv"
 
 # ===== 최종 CSV 스키마 (safety_score_result.csv 기준) =====
 GRID_ID_COL = "grid_id"
@@ -45,7 +45,7 @@ TIME_INCREASE_THRESHOLD = 0.15
 MAP_TILES = "CartoDB positron"
 
 # 결과 지도를 저장할 경로 (테스트 및 확인용)
-MAP_OUTPUT_PATH = "route_map.html"
+MAP_OUTPUT_PATH = "outputs/route_map.html"
 
 # 지오코딩에 사용할 지역명 접미사 (광진구 내 주소/장소명 정확도를 높이기 위함)
 GEOCODE_REGION_HINT = "광진구, 서울"
