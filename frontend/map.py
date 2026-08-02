@@ -1,11 +1,17 @@
 """
 지도 시각화 및 UI 골격 코드
 지도(folium) + UI(streamlit)
+
+폴더 구조 (safety-walk-map 기준)
+├─ data/processed/   광진구_안전시설_통합.csv, safety_score_result.csv, gwangjin.graphml
+├─ route/             shortest_safety_route.py   (가인)
+└─ frontend/map.py    이 파일                     (지아)
 """
 
 import os
 import sys
 import math
+import copy
 import folium
 from folium import FeatureGroup, LayerControl
 from folium.plugins import FastMarkerCluster
@@ -13,7 +19,8 @@ import pandas as pd
 import streamlit as st
 
 # ===== 경로 설정 =====
-
+# 이 파일(frontend/map.py) 위치를 기준으로 절대경로를 잡아서
+# streamlit을 어느 위치에서 실행하든(cwd와 무관하게) 항상 같은 파일을 찾도록 함
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 REPO_ROOT = os.path.dirname(BASE_DIR)
 DATA_DIR = os.path.join(REPO_ROOT, "data", "processed")
@@ -566,7 +573,27 @@ def run_streamlit_app():
                 else:
                     with st.spinner("경로 탐색 알고리즘 실행 중임..."):
                         try:
-                            G, grid = load_route_resources()
+                            G_cached, grid = load_route_resources()
+
+                            # G_cached는 st.cache_resource로 앱 실행 중 계속 재사용되는 객체임.
+                            # find_route() 내부(attach_safe_weights)가 그래프의 엣지 속성을
+                            # 직접 덮어쓰는(in-place mutation) 구조라, 캐시된 원본을 그대로 넘기면
+                            # 클릭할 때마다 같은 객체가 계속 수정되며 상태가 오염될 수 있음.
+                            # → 매 요청마다 복사본을 만들어 그 위에서만 계산함
+                            G = copy.deepcopy(G_cached)
+
+                            # 진단용: 실제로 안전점수가 노드마다 다르게 매핑되어 있는지 확인
+                            score_values = [d.get("safety_score") for _, d in G.nodes(data=True)]
+                            unique_scores = sorted(set(score_values))
+                            with st.expander("진단 정보 (안전점수 분포 확인용)"):
+                                st.write(f"안전점수 서로 다른 값 개수: {len(unique_scores)}개")
+                                st.write(f"최소값: {min(unique_scores):.2f} / 최대값: {max(unique_scores):.2f}")
+                                if len(unique_scores) <= 1:
+                                    st.error(
+                                        "모든 노드의 안전점수가 동일함. 이 경우 alpha 값과 무관하게 "
+                                        "최단경로와 안전경로가 항상 같게 나옴 (attach_safety_scores의 "
+                                        "노드-격자 매핑을 확인 필요)."
+                                    )
 
                             result = find_route(
                                 G,
