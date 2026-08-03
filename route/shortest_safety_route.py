@@ -79,6 +79,11 @@ GEOCODE_REGION_HINT = "광진구, 서울"
 
 
 # 그래프 다운로드 (없으면 다운로드, 있으면 재사용)
+# 설정값에 추가
+WALK_SPEED_KMH = 4.5  # 성인 평균 도보 속도 (필요시 4~5 사이로 조정)
+WALK_SPEED_MPS = WALK_SPEED_KMH * 1000 / 3600
+
+
 def load_graph():
     # data/processed 폴더가 없으면 생성
     DATA_PROCESSED_DIR.mkdir(
@@ -108,10 +113,17 @@ def load_graph():
     print(f"노드 수 : {len(G.nodes)}")
     print(f"엣지 수 : {len(G.edges)}")
 
+<<<<<<< HEAD
     # travel_time을 사용하기 위해 반드시 필요
     # 속도, 이동시간 계산
     G = ox.add_edge_speeds(G)
     G = ox.add_edge_travel_times(G)
+=======
+    # 도보 속도 기준으로 travel_time 직접 계산 
+    for u, v, k, data in G.edges(keys=True, data=True):
+        length = data.get("length", 0)
+        data["travel_time"] = length / WALK_SPEED_MPS
+>>>>>>> 2f53ac5351d8fca52e071363194c3cd7de5bb180
 
     return G
 
